@@ -1,0 +1,17 @@
+# — Docs (ignore all .md except core reference docs) —
+*.md
+!README.md
+!docs/BACKGROUND.md
+!docs/ARCHITECTURE.md
+!docs/API.md
+
+# — IDE / editor —
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# — OS —
+.DS_Store
+Thumbs.db
+

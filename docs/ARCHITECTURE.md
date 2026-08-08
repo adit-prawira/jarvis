@@ -1,0 +1,465 @@
+# Architecture — JARVIS Voice Assistant
+
+**Status:** Draft v1
+**Date:** 2026-08-08
+**Companion docs:** [PRD.md](./PRD.md) · [CONTEXT.md](./CONTEXT.md) (TBD) · [docs/adr/](./adr/) (TBD)
+
+---
+
+## 1. Overview
+
+JARVIS is a Python voice client that wraps `opencode serve` (an HTTP server the opencode CLI already exposes). The voice client listens for a wake word, transcribes speech, sends text to opencode, streams the LLM response, and speaks it through ElevenLabs TTS. JARVIS gains the full power of opencode — file reading, web search, MCP tool calls — without re-implementing any of it.
+
+The architecture is a thin voice skin over a thick existing tool. Every component outside the voice pipeline is either an opencode primitive, a third-party library, or a small MCP wrapper.
+
+---
+
+## 2. System diagram
+
+```
+                            ┌────────────────────────────┐
+                            │  opencode serve (port 4096) │
+                            │  ─────────────────────────  │
+                            │  /session                  │
+   ┌──────────┐             │  /session/:id/message      │
+   │   MIC    │──── audio ──▶│  /session/:id/abort        │     ┌──────────┐
+   └──────────┘             │  /event (SSE)              │────▶│   LLM    │
+        │                   └────────────────────────────┘     └──────────┘
+        │ ear.py                      ▲                              ▲
+        │  ├ openWakeWord             │                              │ tool calls
+        │  └ mlx-whisper              │ text + tool calls            │
+        ▼                             │                              │
+   ┌──────────┐  text   ┌──────────────────────────┐                  │
+   │  turn    │────────▶│  brain.py                │──────────────────┘
+   │  end     │         │  ──────────────────      │
+   │ detection│         │  httpx async client      │
+   └──────────┘         │  session lifecycle       │
+                        │  abort on barge-in       │
+                        └──────────────────────────┘
+                                  │ text deltas (SSE)
+                                  ▼
+                        ┌──────────────────────────┐
+                        │  sentence_splitter.py    │
+                        │  ──────────────────      │
+                        │  accumulate buffer       │
+                        │  split on [.!?] + space  │
+                        │  flush at 200 chars max  │
+                        └──────────────────────────┘
+                                  │ sentences
+                                  ▼
+                        ┌──────────────────────────┐
+                        │  mouth.py                │
+                        │  ──────────────────      │
+                        │  ElevenLabs stream TTS   │
+                        │  sounddevice output      │
+                        │  interruptible           │
+                        └──────────────────────────┘
+                                  │ MP3 chunks
+                                  ▼
+                             ┌──────────┐
+                             │  SPEAKER │
+                             └──────────┘
+
+  ┌────────────────────┐         ┌────────────────────┐
+  │  MCP: system       │         │  MCP: dev          │
+  │  ──────────────    │         │  ──────────────    │
+  │  open_app          │         │  open_file         │
+  │  close_app         │         │  open_project      │
+  │  list_apps         │         │  show_file         │
+  │  get/set_volume    │         │  find_grep         │
+  │  get_battery       │         │  git_*             │
+  │  get_time          │         │  run_tests         │
+  └────────────────────┘         └────────────────────┘
+            ▲                              ▲
+            └──────────┬───────────────────┘
+                       │ tool calls (via opencode)
+                       │
+                ┌──────┴──────┐
+                │   notes/    │  ← long-term memory
+                │  ────────   │     (user.md, preferences.md,
+                │  user.md    │      projects.md)
+                │  prefs.md   │
+                │  projects.md│
+                └─────────────┘
+```
+
+---
+
+## 3. Components
+
+### 3.1 `ear.py` — Voice input pipeline
+
+**Responsibility:** Wake word detection + speech-to-text.
+
+| Sub-component | Library | Notes |
+|---|---|---|
+| Wake word | `openwakeword` | "hey jarvis" model, threshold ~0.5, push-to-talk deferred |
+| STT | `mlx-whisper` | Apple Silicon native, ~1-2s for short utterances |
+| Audio capture | `sounddevice` | Input stream, blocking on wake word callback |
+| End-of-turn | silence detector (custom) | 1.5-2s of silence → end turn |
+
+**Test seam:** exposes `transcribe(audio_bytes: bytes) -> str` interface so it can be tested without real audio.
+
+### 3.2 `brain.py` — Conversation engine
+
+**Responsibility:** All communication with `opencode serve`.
+
+| Concern | Mechanism |
+|---|---|
+| Session lifecycle | `POST /session` on launch, reuse across turns |
+| Send message | `POST /session/:id/message` (sync or async) |
+| Stream response | `GET /event` SSE, accumulate `message.part.delta` events |
+| Abort turn | `POST /session/:id/abort` on barge-in |
+| Persona | driven by `AGENTS.md` in `jarvis_home/` (opencode project dir) |
+
+**Test seam:** httpx client mockable with `respx`. Tests exercise session creation, message send, SSE event accumulation, and abort.
+
+### 3.3 `event_stream.py` — SSE parser
+
+**Responsibility:** Convert raw SSE bytes into typed events.
+
+**Output shape** (matches opencode SDK):
+```python
+class Event:
+    type: Literal["message.part.delta", "session.idle", "session.error", "tool.call"]
+    data: dict
+```
+
+**Test seam:** pure function over byte stream, fast unit tests.
+
+### 3.4 `sentence_splitter.py` — Text chunker
+
+**Responsibility:** Accumulate text deltas, flush complete sentences to TTS.
+
+**Algorithm:**
+1. Append each delta to buffer
+2. Look for sentence boundary: `re.split(r'(?<=[.!?])\s+', buffer)`
+3. Flush complete sentences immediately
+4. If buffer exceeds 200 chars without a boundary, flush on word boundary (avoid starvation)
+5. Flush remainder on `session.idle` event
+
+**Test seam:** pure function over list of deltas. Many small unit tests.
+
+### 3.5 `mouth.py` — Voice output pipeline
+
+**Responsibility:** Text → speech via ElevenLabs + audio playback.
+
+| Sub-component | Library | Notes |
+|---|---|---|
+| TTS | `elevenlabs` | streaming `generate()`, community JARVIS voice |
+| Playback | `sounddevice` | MP3 chunks → output stream |
+| Interruption | abort flag checked per chunk; full stop on barge-in signal | |
+
+**Test seam:** TTS and playback separable. Test text-to-bytes without playing sound.
+
+### 3.6 `ui.py` — Rich terminal UI
+
+**Responsibility:** Display what JARVIS is doing (for dev/debug; in production, mostly silent).
+
+| Panel | Content |
+|---|---|
+| Status | wake / listening / thinking / speaking / idle |
+| Transcript | last user utterance |
+| Tool calls | current tool, last N tools |
+| Errors | recent errors with stack traces |
+
+### 3.7 `main.py` — Orchestration
+
+**Responsibility:** Wire all components together. The "main loop."
+
+```
+while True:
+    wait for wake
+    prompt = ear.transcribe_until_silence()
+    if prompt in dismissals: continue
+    if prompt in farewells: sign_off(); break
+    if not prompt: timeout_or_prompt(); continue
+    brain.send_turn(prompt)
+    for delta in brain.stream():
+        if barge_in_detected():
+            brain.abort()
+            break
+        sentence = splitter.feed(delta)
+        if sentence: mouth.speak(sentence)
+    if idle_timeout(): break
+```
+
+### 3.8 MCP wrappers — Action layer
+
+**Two MCP servers**, each running as a small Python process that opencode spawns:
+
+#### `system_actions` (general use)
+- `open_app(name)` — `open -a` (whitelisted names only)
+- `close_app(name)` — `osascript -e 'quit app ...'`
+- `list_running_apps()` — `osascript`
+- `get_volume()` / `set_volume(level)` — `osascript`
+- `get_battery()` — `pmset`
+- `get_time()` — `datetime`
+
+**Whitelisted apps** (PRD §4): Safari, Chrome, Firefox, Spotify, Music, Notes, Calendar, Reminders, Mail, Messages, Terminal, iTerm, Ghostty, VS Code, Cursor, Finder, System Settings, Slack, Discord, Zoom.
+
+#### `dev_actions` (developer use)
+- `open_file_in_editor(file)` — opens in nvim in a new Ghostty window
+- `open_project(name)` — resolves alias via `notes/projects.md`, opens new Ghostty window with `cd` and `nvim`
+- `show_file(file)` — reads file, returns content
+- `find_grep(pattern)` — `rg` within the project
+- `git_status / git_diff / git_log` — `git` in the project
+- `run_tests` — auto-detect runner (pytest, jest, cargo, go test) and execute
+
+**Path scope:** every dev action resolves paths against `~/Documents/projects/` and rejects anything outside. No exceptions.
+
+### 3.9 `notes/` — Long-term memory
+
+A directory inside `jarvis_home/` (the opencode project dir) where the LLM can read and write.
+
+```
+jarvis_home/
+├── AGENTS.md          ← persona, capabilities, refusal patterns
+├── notes/
+│   ├── user.md        ← user's name, role, preferences
+│   ├── preferences.md ← "I prefer dark mode", etc.
+│   └── projects.md    ← alias map: "JARVIS" → jarvis/, "monoflow" → monoflow/
+└── docs/adr/          ← architectural decision records
+```
+
+The `write` tool is whitelisted only on this path. The MCP wrapper enforces this.
+
+---
+
+## 4. Data flow
+
+### 4.1 One turn (happy path)
+
+```
+[mic] audio bytes
+  └─▶ ear.openwakeword (background)
+        └─▶ wake detected → start recording
+              └─▶ ear.mlx_whisper(audio) → "what time is it"
+                    └─▶ brain.send_turn("what time is it")
+                          └─▶ opencode (POST /session/:id/message)
+                                └─▶ LLM (sees AGENTS.md, notes/, tools)
+                                      └─▶ response delta: "Certainly,"
+                                            └─▶ brain.stream (SSE /event)
+                                                  └─▶ splitter.feed("Certainly,")
+                                                        └─▶ buffer too small, no flush
+                                                  └─▶ response delta: " sir. The time is 14:32."
+                                                        └─▶ splitter.feed("Certainly, sir. The time is 14:32.")
+                                                              └─▶ flush "Certainly, sir." → mouth
+                                                              └─▶ flush "The time is 14:32." → mouth
+                                                  └─▶ session.idle event
+                                                        └─▶ splitter.flush() (no remainder)
+  └─▶ mouth.elevenlabs("Certainly, sir.")  ─▶ speaker
+  └─▶ mouth.elevenlabs("The time is 14:32.") ─▶ speaker
+```
+
+### 4.2 Barge-in (mid-response interrupt)
+
+```
+[mouth playing sentence N]
+  └─▶ mic detects speech → ear.mlx_whisper (interrupt priority)
+        └─▶ barge-in signal → main loop
+              └─▶ brain.abort() (POST /session/:id/abort)
+                    └─▶ mouth.stop() (drain output stream)
+                          └─▶ ear.start_recording() (new turn)
+```
+
+### 4.3 Tool call (e.g. "open Spotify")
+
+```
+[user: "open Spotify"]
+  └─▶ brain.send_turn("open Spotify")
+        └─▶ LLM emits tool call: open_app(name="Spotify")
+              └─▶ brain detects tool call before any text delta
+                    └─▶ status: "Opening Spotify, sir." (spoken immediately)
+                          └─▶ MCP system_actions.open_app("Spotify")
+                                └─▶ osascript → Spotify launches
+                          └─▶ LLM receives tool result
+                                └─▶ response: "Spotify is open, sir."
+                                      └─▶ mouth speaks
+```
+
+---
+
+## 5. Key interfaces
+
+### 5.1 Python module boundaries
+
+```python
+# ear.py
+class Ear:
+    async def listen_for_wake() -> None: ...
+    async def transcribe_utterance() -> str: ...
+    async def check_barge_in() -> bool: ...  # background, non-blocking
+
+# brain.py
+class Brain:
+    async def __init__(self, base_url: str, auth: str) -> None: ...
+    async def create_session() -> str: ...  # returns session_id
+    async def send_turn(self, session_id: str, text: str) -> AsyncIterator[Event]: ...
+    async def abort(self, session_id: str) -> None: ...
+
+# sentence_splitter.py
+class SentenceSplitter:
+    def feed(self, delta: str) -> Iterator[str]: ...  # yields complete sentences
+    def flush(self) -> str | None: ...  # returns remainder on end-of-stream
+
+# mouth.py
+class Mouth:
+    async def speak(self, text: str) -> None: ...
+    def stop(self) -> None: ...  # immediate, drain not required
+
+# ui.py
+class UI:
+    def show_status(self, state: str) -> None: ...
+    def show_transcript(self, text: str) -> None: ...
+    def show_tool(self, name: str, args: dict) -> None: ...
+    def show_error(self, err: Exception) -> None: ...
+```
+
+### 5.2 opencode HTTP API (consumed)
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/global/health` | liveness check |
+| `POST` | `/session` | create session, returns `{id}` |
+| `POST` | `/session/:id/message` | send a turn (sync or async) |
+| `GET` | `/event` | SSE stream of session events |
+| `POST` | `/session/:id/abort` | abort current turn |
+
+`Authorization: Bearer ${OPENCODE_SERVER_PASSWORD}` header on all calls.
+
+### 5.3 Tool policy (enforced in MCP + opencode config)
+
+```jsonc
+{
+  "read": "allow",
+  "webfetch": "allow",
+  "websearch": "allow",
+  "bash": "allow",  // MCP wrapper filters to whitelist
+  "write": "deny",  // except notes/ — MCP wrapper allows path-scoped writes
+  "edit": "deny"
+}
+```
+
+The MCP wrappers are the policy enforcement boundary. opencode sees only the wrappers' exposed tool names; the wrappers internally reject anything outside their scope.
+
+---
+
+## 6. Trust boundaries
+
+```
+┌────────────────────────────────────────────────────────────┐
+│ TRUSTED (Python client + opencode server)                  │
+│  - ear.py, brain.py, splitter, mouth.py, ui.py, main.py   │
+│  - opencode server, SSE, tool policy                       │
+│  - MCP wrappers (system_actions, dev_actions)              │
+│  - notes/ directory (writable by LLM)                      │
+└────────────────────────────────────────────────────────────┘
+                          ▲
+                          │ tool calls cross here
+                          │
+┌────────────────────────────────────────────────────────────┐
+│ UNTRUSTED (LLM-mediated actions)                           │
+│  - shell commands (whitelisted via MCP)                    │
+│  - file reads (scoped to ~/Documents/projects/ for dev)    │
+│  - file writes (scoped to notes/ only)                     │
+│  - network calls (webfetch/websearch)                      │
+└────────────────────────────────────────────────────────────┘
+                          ▲
+                          │ the LLM decides what to call
+                          │
+                     ┌────────┐
+                     │  LLM   │
+                     └────────┘
+```
+
+**Invariants the LLM cannot violate** (enforced in MCP wrappers, not in the prompt):
+1. Shell commands can only be from the system_actions / dev_actions whitelist
+2. Dev action file paths must resolve under `~/Documents/projects/`
+3. Writes are only allowed to `jarvis_home/notes/`
+4. Bash can only be invoked through the MCP wrapper, which filters before exec
+
+---
+
+## 7. Failure modes & fallbacks
+
+| Failure | Detection | Fallback |
+|---|---|---|
+| `opencode serve` down | `GET /global/health` fails on boot | exit with clear error, LaunchAgent restart loop |
+| ElevenLabs quota exhausted | 429 from API | fall back to system `say` (TTS via macOS, no persona) |
+| ElevenLabs API down | connection error | same as above |
+| macOS mic permission denied | `sounddevice` raises on stream open | text-only mode (loop still works with typed input) |
+| LLM refuses | response is "I cannot..." | speak refusal verbatim, no paraphrase |
+| LLM tool call rejected by MCP | MCP raises | speak "I couldn't do that, sir", surface error in UI |
+| mlx-whisper fails | exception in `transcribe()` | retry once, then "Sorry sir, I didn't catch that" |
+| ElevenLabs slow | chunks arrive >500ms after text | continue buffering, flush all at session.idle |
+| User speaks during TTS | barge-in detected | abort turn, full stop, restart with new input |
+| Process crashes | any unhandled exception | LaunchAgent restart loop with backoff |
+
+---
+
+## 8. Latency budget
+
+| Stage | Time | Notes |
+|---|---|---|
+| Wake detection | <100ms | openWakeWord runs continuously, low CPU |
+| STT (short utterance) | 1-2s | mlx-whisper on M-series |
+| LLM first token | 2-4s | depends on model, prompt size |
+| First sentence spoken | +500ms | after first sentence boundary in delta |
+| Subsequent sentences | streaming | overlapped with TTS playback |
+
+**End-to-end (wake to first speech):** ~3-5s, accepted as the latency budget for a butler persona.
+
+**Streaming benefit:** with sentence-level TTS, JARVIS starts speaking well before the LLM finishes generating. The user perceives maybe 4-5s total.
+
+---
+
+## 9. Tech stack
+
+| Layer | Choice | Why |
+|---|---|---|
+| Brain | `opencode serve` | already in user's stack, full tool ecosystem |
+| HTTP client | `httpx` + `httpx-sse` | async-native, SSE support, OpenAPI ecosystem |
+| STT | `mlx-whisper` | Apple Silicon native, fast, accurate |
+| Wake | `openwakeword` | open-source, no cloud |
+| TTS | `elevenlabs` | community JARVIS voice, streaming, low latency |
+| Audio | `sounddevice` + `soundfile` + `numpy` | stdlib-ish, low-level enough for interruption |
+| UI | `rich` | terminal panels, low ceremony |
+| Config | `python-dotenv` | `.env` for API keys, server password |
+| Validation | `pydantic` | typed event shapes |
+| Tests | `pytest` + `pytest-asyncio` + `respx` | standard, httpx mockable |
+
+**Pinned versions:** see `requirements.txt` (Day 1).
+
+---
+
+## 10. Architectural decisions (pointers)
+
+| ADR | Decision | Why it matters |
+|---|---|---|
+| [ADR-0001](./adr/0001-hybrid-session-model.md) | Hybrid session model | Fresh per launch + `notes/` for long-term |
+| [ADR-0002](./adr/0002-sentence-level-tts.md) | Sentence-level TTS streaming | Perceived latency vs simple whole-response TTS |
+| [ADR-0003](./adr/0003-mcp-bash-wrapper.md) | MCP wrapper for whitelisted bash | Policy enforcement, not prompt enforcement |
+| [ADR-0004](./adr/0004-tool-call-status.md) | Tool-call-aware status updates | User visibility into LLM activity |
+
+ADRs are written during Phase 0. Until then, the decisions live in the PRD and this doc.
+
+---
+
+## 11. Glossary
+
+See [CONTEXT.md](./CONTEXT.md) for the canonical glossary (20 terms: turn, barge-in, wake, filler, tool-call, quota, session, delta, flush, sentence, MCP, ADR, persona, alias, fall-back, abort, idle, dismiss, farewell, scope). Written in Phase 0.
+
+---
+
+## 12. Open architecture questions
+
+These are not blockers but worth flagging:
+
+1. **Multiple JARVIS instances** — could two JARVIS processes run at once (e.g. for different users or different wake words)? Today, the design assumes one. If multi-instance is wanted, the LaunchAgent needs a per-user config and the opencode session would be per-instance.
+2. **Wake word false positives** — openWakeWord's pre-trained "hey jarvis" model may trigger on similar phrases. Mitigations: threshold tuning (0.5 → 0.7), custom-trained model, or push-to-talk fallback. Deferred to production polish.
+3. **Streaming abort granularity** — when the user barges in, can we abort mid-token at the LLM level, or only mid-response? `POST /session/:id/abort` semantics need verification on Day 1.
+4. **Notes file contention** — if the LLM writes to `notes/user.md` while the user is editing it externally, last-write-wins. Probably fine for MVP, but a real conflict-resolution strategy could be added later.
+5. **MCP server lifecycle** — the MCP servers are spawned by opencode, but JARVIS itself needs to know they're healthy. A startup ping per MCP would catch misconfig early.
+
+These are not architectural defects; they are future-work notes.

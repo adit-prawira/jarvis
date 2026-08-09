@@ -1,0 +1,10 @@
+# See https://pre-commit.com for more information
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-branch-diff
+        name: ruff check (branch diff vs main)
+        description: Run ruff on Python files changed in this branch vs main
+        entry: scripts/pre-commit
+        language: script
+        pass_filenames: false

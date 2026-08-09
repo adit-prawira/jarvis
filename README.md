@@ -6,12 +6,7 @@ A J.A.R.V.I.S.-style voice assistant for the macOS desktop, built as a thin Pyth
 
 ## Status
 
-**Phase 0 — Foundation.** No code yet. The planning documents are complete; the project is ready to build.
-
-- [docs/PRD.md](docs/PRD.md) — user stories, scope
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — components, data flow, decisions
-- [docs/BACKGROUND.md](docs/BACKGROUND.md) — why this exists, what was rejected
-- [GitHub issues](https://github.com/adit-prawira/jarvis/issues) — phase roadmap (8 PRDs) and 35 vertical slices
+[See issues.](https://github.com/adit-prawira/jarvis/issues)
 
 ## What it is
 
@@ -52,25 +47,54 @@ The voice client is thin. The brain, the tools, the session, the LLM — all inh
 
 ## Setup
 
+### 1. Clone and install
+
 ```bash
 git clone https://github.com/adit-prawira/jarvis.git
 cd jarvis
-uv venv
-source .venv/bin/activate
-uv pip install -r requirements.txt  # TBD: written in Slice 3
-cp .env.example .env
-# Edit .env: set OPENCODE_SERVER_PASSWORD and ELEVENLABS_API_KEY
+uv sync
+uv run pre-commit install
 ```
+
+### 2. Generate a fixed server password
+
+`opencode serve` requires a password for its HTTP API. Since both server and
+client run on `127.0.0.1`, a static password is fine — generate it once and
+reuse it forever.
+
+```bash
+openssl rand -hex 16
+# Save the output — you'll need it in the next two steps.
+```
+
+### 3. Create `.env`
+
+```bash
+cp .env.example .env
+# Edit .env:
+#   OPENCODE_SERVER_PASSWORD=<the hex string from step 2>
+#   ELEVENLABS_API_KEY=<your ElevenLabs API key>
+```
+
+### 4. Add the server alias to your shell config
+
+Add this to `~/.zshrc` (or `~/.bashrc`). The password is read from your
+`.env` file by `source .env && ...`:
+
+```bash
+alias jarvis-server='source ~/Documents/projects/jarvis/.env && opencode serve --port 4096 --hostname 127.0.0.1'
+```
+
+Then reload: `source ~/.zshrc`
 
 ## Usage
 
 ```bash
 # Terminal 1: start opencode serve
-export OPENCODE_SERVER_PASSWORD="$(openssl rand -hex 16)"
-opencode serve --port 4096 --hostname 127.0.0.1
+jarvis-server
 
 # Terminal 2: start JARVIS
-cd jarvis
+cd ~/Documents/projects/jarvis
 uv run python main.py
 ```
 
@@ -107,9 +131,9 @@ The `brain` module's interface with `opencode serve` is the primary test seam �
 
 ### Code style
 
-Standard Python: `ruff` for linting, `pytest` + `pytest-asyncio` for tests, type hints throughout. (Pinned versions in `requirements.txt` once Phase 0 is complete.)
+`ruff` for linting, `pytest` + `pytest-asyncio` for tests, `respx` for mocking httpx, type hints throughout.
 
-## Project structure
+## Planned project structure
 
 ```
 jarvis/
@@ -177,11 +201,10 @@ This was the `@tarquinen/opencode-dcp` plugin — already removed from `~/.confi
 
 ## Design decisions
 
-- **Why opencode as the brain, not direct LLM API?** opencode already has tools (bash, read, write, webfetch, websearch), session management, and SSE streaming. JARVIS becomes a thin voice skin, not a from-scratch agent. Saves months of work.
-- **Why local opencode serve, not cloud?** No API key for the LLM (uses your opencode subscription). Privacy. Low latency on local network.
-- **Why ElevenLabs for TTS?** Has a community "JARVIS" voice. Streaming output = low perceived latency. Falls back to system `say` if quota exhausted.
-- **Why MCP wrappers instead of letting the LLM call tools directly?** MCP enforces the policy boundary. The LLM sees only the tool names we expose; the wrapper filters before execution. Can't be bypassed by prompt injection.
-- **Why voice-only input, no push-to-talk?** Wake word is sufficient for a single user. Push-to-talk deferred. If wake word becomes annoying, easy to add later.
+- **Why opencode as the brain, not direct LLM API?** opencode already has tools, sessions, and SSE streaming. JARVIS is a thin voice skin, not a from-scratch agent.
+- **Why MCP wrappers instead of letting the LLM call tools directly?** The wrappers enforce the policy boundary — the LLM sees only the tool names we expose; the wrapper filters before execution.
+
+Full context in [docs/BACKGROUND.md](docs/BACKGROUND.md).
 
 ## Contributing
 

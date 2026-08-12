@@ -4,12 +4,13 @@
 !docs/BACKGROUND.md
 !docs/ARCHITECTURE.md
 !docs/API.md
-
+!jarvis_home/*.md
 # — IDE / editor —
 .vscode/
 .idea/
 *.swp
 *.swo
+!
 
 # — OS —
 .DS_Store

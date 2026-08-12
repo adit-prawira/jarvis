@@ -10,7 +10,7 @@ A J.A.R.V.I.S.-style voice assistant for the macOS desktop, built as a thin Pyth
 
 ## What it is
 
-JARVIS listens for "hey jarvis" via openWakeWord, transcribes via mlx-whisper, sends the text to a local `opencode serve` (already part of your stack) over HTTP, streams the LLM response via SSE, splits it into sentences, and speaks each through ElevenLabs TTS using a community "JARVIS" voice. A small MCP wrapper exposes system and developer actions.
+JARVIS listens for "hey jarvis" via openWakeWord, transcribes via mlx-whisper, sends the text to a local `opencode serve` (already part of your stack) over HTTP, streams the LLM response via SSE, splits it into sentences, and speaks each through Microsoft Edge TTS (`en-GB-RyanNeural`), a free neural British male voice. Falls back to macOS `say` if the voice API is unreachable. A small MCP wrapper exposes system and developer actions.
 
 You can open apps, check the battery, run tests, grep code, switch projects — all hands-free, in a dry British butler persona.
 
@@ -31,7 +31,7 @@ mic → wake (openWakeWord)
      → brain (httpx → opencode serve :4096 → LLM)
      → SSE stream
      → sentence splitter
-     → TTS (ElevenLabs streaming)
+     → TTS (Edge TTS → macOS say fallback)
      → speaker
 ```
 
@@ -43,7 +43,6 @@ The voice client is thin. The brain, the tools, the session, the LLM — all inh
 - **OS:** macOS 14+ (Sonoma or later).
 - **opencode:** installed and authenticated (`opencode auth list` shows an active provider).
 - **Python:** 3.11+.
-- **API keys:** `ELEVENLABS_API_KEY` (free tier works for dev). Community "JARVIS" voice ID from [ElevenLabs voice library](https://elevenlabs.io/voice-library).
 
 ## Setup
 
@@ -73,7 +72,6 @@ openssl rand -hex 16
 cp .env.example .env
 # Edit .env:
 #   OPENCODE_SERVER_PASSWORD=<the hex string from step 2>
-#   ELEVENLABS_API_KEY=<your ElevenLabs API key>
 ```
 
 ### 4. Add the server alias to your shell config
@@ -143,7 +141,7 @@ jarvis/
 │   ├── event_stream.py     # SSE parser
 │   ├── sentence_splitter.py
 │   ├── ear.py              # mic + wake + STT
-│   ├── mouth.py            # TTS
+│   ├── mouth.py            # Edge TTS + say fallback
 │   ├── ui.py               # Rich terminal panels
 │   └── mcp/
 │       ├── system_actions/ # apps, volume, battery, time
@@ -185,9 +183,10 @@ The first invocation downloads the model. Subsequent runs use the cache.
 
 System Settings → Privacy & Security → Microphone → enable for your terminal app (Terminal.app, iTerm, Ghostty, etc). Restart JARVIS.
 
-### ElevenLabs quota exhausted
+### Edge TTS unreachable
 
-JARVIS falls back to macOS `say` (system TTS). Persona is lost but functionality remains. Upgrade your ElevenLabs plan or wait for quota reset.
+JARVIS falls back to macOS `say` (system TTS). Persona is lost but functionality
+remains. Check your internet connection and that `edge-tts` is installed.
 
 ### JARVIS isn't responding to "hey jarvis"
 
@@ -219,5 +218,5 @@ Personal use. No license granted.
 - opencode — the brain, the tools, the session model
 - mlx-whisper — Apple Silicon STT
 - openWakeWord — wake word detection
-- ElevenLabs — TTS with a community "JARVIS" voice
+- Edge TTS — free neural TTS, `en-GB-RyanNeural` British male voice
 - Iron Man — the aesthetic

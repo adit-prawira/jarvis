@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-JARVIS is a Python voice client that wraps `opencode serve` (an HTTP server the opencode CLI already exposes). The voice client listens for a wake word, transcribes speech, sends text to opencode, streams the LLM response, and speaks it through ElevenLabs TTS. JARVIS gains the full power of opencode — file reading, web search, MCP tool calls — without re-implementing any of it.
+JARVIS is a Python voice client that wraps `opencode serve` (an HTTP server the opencode CLI already exposes). The voice client listens for a wake word, transcribes speech, sends text to opencode, streams the LLM response, and speaks it through Microsoft Edge TTS (`en-GB-RyanNeural`, a free neural British male voice), falling back to macOS `say` when the API is unreachable. JARVIS gains the full power of opencode — file reading, web search, MCP tool calls — without re-implementing any of it.
 
 The architecture is a thin voice skin over a thick existing tool. Every component outside the voice pipeline is either an opencode primitive, a third-party library, or a small MCP wrapper.
 
@@ -50,7 +50,7 @@ The architecture is a thin voice skin over a thick existing tool. Every componen
                         ┌──────────────────────────┐
                         │  mouth.py                │
                         │  ──────────────────      │
-                        │  ElevenLabs stream TTS   │
+                         │  Edge TTS / macOS say   │
                         │  sounddevice output      │
                         │  interruptible           │
                         └──────────────────────────┘
@@ -142,12 +142,13 @@ class Event:
 
 ### 3.5 `mouth.py` — Voice output pipeline
 
-**Responsibility:** Text → speech via ElevenLabs + audio playback.
+**Responsibility:** Text → speech via Microsoft Edge TTS + audio playback. Falls back to macOS `say` when the voice API is unreachable.
 
 | Sub-component | Library | Notes |
 |---|---|---|
-| TTS | `elevenlabs` | streaming `generate()`, community JARVIS voice |
-| Playback | `sounddevice` | MP3 chunks → output stream |
+| TTS (primary) | `edge-tts` | free neural TTS, `en-GB-RyanNeural` British male voice, streaming MP3 |
+| TTS (fallback) | macOS `say` | instant, local, zero cost, British voices (`daniel`) |
+| Playback | `sounddevice` | audio chunks → output stream |
 | Interruption | abort flag checked per chunk; full stop on barge-in signal | |
 
 **Test seam:** TTS and playback separable. Test text-to-bytes without playing sound.
@@ -248,8 +249,8 @@ The `write` tool is whitelisted only on this path. The MCP wrapper enforces this
                                                               └─▶ flush "The time is 14:32." → mouth
                                                   └─▶ session.idle event
                                                         └─▶ splitter.flush() (no remainder)
-  └─▶ mouth.elevenlabs("Certainly, sir.")  ─▶ speaker
-  └─▶ mouth.elevenlabs("The time is 14:32.") ─▶ speaker
+  └─▶ mouth.speak("Certainly, sir.")  ─▶ speaker
+  └─▶ mouth.speak("The time is 14:32.") ─▶ speaker
 ```
 
 ### 4.2 Barge-in (mid-response interrupt)
@@ -386,13 +387,12 @@ The MCP wrappers are the policy enforcement boundary. opencode sees only the wra
 | Failure | Detection | Fallback |
 |---|---|---|
 | `opencode serve` down | `GET /global/health` fails on boot | exit with clear error, LaunchAgent restart loop |
-| ElevenLabs quota exhausted | 429 from API | fall back to system `say` (TTS via macOS, no persona) |
-| ElevenLabs API down | connection error | same as above |
+| Edge TTS unreachable | HTTP error or timeout from Microsoft's TTS API | fall back to system `say` (TTS via macOS, no neural voice) |
 | macOS mic permission denied | `sounddevice` raises on stream open | text-only mode (loop still works with typed input) |
 | LLM refuses | response is "I cannot..." | speak refusal verbatim, no paraphrase |
 | LLM tool call rejected by MCP | MCP raises | speak "I couldn't do that, sir", surface error in UI |
 | mlx-whisper fails | exception in `transcribe()` | retry once, then "Sorry sir, I didn't catch that" |
-| ElevenLabs slow | chunks arrive >500ms after text | continue buffering, flush all at session.idle |
+| Edge TTS slow | response delayed | continue buffering, flush all at session.idle or force `say` fallback |
 | User speaks during TTS | barge-in detected | abort turn, full stop, restart with new input |
 | Process crashes | any unhandled exception | LaunchAgent restart loop with backoff |
 
@@ -422,7 +422,7 @@ The MCP wrappers are the policy enforcement boundary. opencode sees only the wra
 | HTTP client | `httpx` + `httpx-sse` | async-native, SSE support, OpenAPI ecosystem |
 | STT | `mlx-whisper` | Apple Silicon native, fast, accurate |
 | Wake | `openwakeword` | open-source, no cloud |
-| TTS | `elevenlabs` | community JARVIS voice, streaming, low latency |
+| TTS | `edge-tts` + macOS `say` fallback | free neural TTS, `en-GB-RyanNeural` British male voice, no API key |
 | Audio | `sounddevice` + `soundfile` + `numpy` | stdlib-ish, low-level enough for interruption |
 | UI | `rich` | terminal panels, low ceremony |
 | Config | `python-dotenv` | `.env` for API keys, server password |

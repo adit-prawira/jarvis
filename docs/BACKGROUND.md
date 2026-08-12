@@ -78,7 +78,7 @@ Every dependency was selected to fit the constraints: macOS, Apple Silicon, loca
 |---|---|
 | `mlx-whisper` (STT) | Native to Apple Silicon, no GPU quota, runs offline. Faster-Whisper would also work but lacks the M-series optimization. |
 | `openwakeword` (wake word) | Open-source, runs locally, no cloud round-trip. Picovoice/Porcupine would work but require accounts and per-device licenses. |
-| `elevenlabs` (TTS) | Has a community "JARVIS" voice. Streaming output (low latency). Free tier is sufficient for development. macOS `say` is a fine fallback but sounds nothing like the persona. |
+| `edge-tts` (TTS) | Free Microsoft Edge neural TTS, no API key, no quota, cross-platform. `en-GB-RyanNeural` is a crisp British male voice. macOS `say` is an instant local fallback. |
 | `httpx` + `httpx-sse` (HTTP) | Async-native, supports SSE without extra plumbing. `aiohttp` is fine but `httpx` has better type hints. |
 | `rich` (UI) | Low ceremony for terminal panels, good for the dev/debug overlay. Not used in production where JARVIS is mostly silent. |
 | `sounddevice` (audio) | Direct PortAudio binding, low latency, easy to interrupt. PyAudio works but is older. |
@@ -110,7 +110,7 @@ A few directions were considered and explicitly dropped.
 A real product would not accept these. A personal tool can.
 
 - **~3-5s first-token latency.** Voice interactions normalize this. A real-time chatbot would reject it.
-- **ElevenLabs quota burn.** Each response costs a few hundred characters. Daily use will require the $5/mo Starter plan. Acceptable for the persona.
+- **Edge TTS depends on Microsoft's free API.** No quota, no key, no account — but the API could be retired or rate-limited. Has been stable since 2021 with no signs of deprecation. `say` fallback covers outages.
 - **macOS-only.** No path to Linux or Windows. The system actions (`osascript`, AppleScript app control) don't port.
 - **No push-to-talk.** If wake word fails, the user has to type. That's a real fallback gap.
 - **Opencode subscription as single point of failure.** If opencode changes its API, JARVIS breaks. Risk is low (opencode is well-maintained) but real.
@@ -158,7 +158,7 @@ These are not blockers; they're the kinds of things that emerge as the project l
 2. **Will the user want a second wake word?** "Computer" is the Star Trek equivalent. Easy to add with openWakeWord's pre-trained models. Defer until asked.
 3. **Will memory actually help?** The `notes/` design assumes long-term memory is valuable. If the user doesn't end up telling JARVIS things to remember, the directory will go unused. Check after 30 days.
 4. **Will the dev actions actually be used?** "Open the JARVIS project" is a fun demo. If the user only ever asks general questions, the MCP dev wrapper is over-engineered. Build it; see if it's used.
-5. **What does JARVIS sound like in 2027?** ElevenLabs voices improve. New community voices appear. Easy to swap; worth a periodic check.
+5. **What does JARVIS sound like in 2027?** Microsoft may ship new British voices for Edge TTS. Neural TTS quality keeps improving. Easy to swap the voice ID in `mouth.py`.
 
 These are not bugs in the design. They're future-me's prompts for paying attention.
 
@@ -171,7 +171,7 @@ These are not bugs in the design. They're future-me's prompts for paying attenti
 - [opencode SDK docs](https://opencode.ai/docs/sdk/) — typed event shapes
 - [openWakeWord](https://github.com/dscripka/openWakeWord) — wake word detection
 - [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) — Apple Silicon STT
-- [ElevenLabs voice library](https://elevenlabs.io/voice-library) — community "JARVIS" voice
+- [edge-tts](https://github.com/rany2/edge-tts) — Python wrapper for Microsoft Edge free neural TTS
 
 ---
 

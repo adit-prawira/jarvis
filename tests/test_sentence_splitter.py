@@ -7,7 +7,7 @@ until flush() is called or the next delta arrives starting with whitespace.
 """
 
 import pytest
-from core.sentence_splitter import SentenceSplitter
+from domain.text.sentence_splitter import SentenceSplitter
 
 
 # — boundary: sentence followed by whitespace yields via flush —

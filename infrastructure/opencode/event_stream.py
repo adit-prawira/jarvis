@@ -1,24 +1,28 @@
-import httpx
 import json
-from typing import AsyncIterator, Literal, get_args
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from typing import Literal, get_args
+
+import httpx
 
 EventType = Literal["message.updated", "session.idle", "session.error", "server.connected"]
 
 ALLOWED_EVENTS = get_args(EventType)
+
 
 @dataclass
 class Event:
     type: EventType
     data: dict = field(default_factory=dict)
 
+
 class EventStream:
     @staticmethod
     async def parse_event(response: httpx.Response) -> AsyncIterator[Event]:
-        """Yield event objects from the gloabl SSE event stream."""
+        """Yield event objects from the global SSE event stream."""
         async for line in response.aiter_lines():
             if not line.startswith("data: "):
-                continue 
+                continue
             payload = line.removeprefix("data: ")
             if payload == "[DONE]":
                 return
@@ -29,7 +33,5 @@ class EventStream:
                 continue
 
             event_type = raw_object.get("type", "")
-            is_known_event = event_type in ALLOWED_EVENTS
-            if is_known_event:
+            if event_type in ALLOWED_EVENTS:
                 yield Event(type=event_type, data=raw_object)
-

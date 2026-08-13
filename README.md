@@ -37,12 +37,16 @@ mic → wake (openWakeWord)
 
 The voice client is thin. The brain, the tools, the session, the LLM — all inherited from `opencode serve`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture.
 
+The persona lives in `persona/AGENTS.md`. A `jarvis` agent (defined in
+`opencode.json`) points at that file as its system prompt, and the client sends
+`agent: "jarvis"` on each turn — opencode loads the persona, not the Python client.
+
 ## Requirements
 
 - **Hardware:** Apple Silicon Mac (M1/M2/M3/M4). mlx-whisper is Apple Silicon native.
 - **OS:** macOS 14+ (Sonoma or later).
 - **opencode:** installed and authenticated (`opencode auth list` shows an active provider).
-- **Python:** 3.11+.
+- **Python:** 3.14+.
 
 ## Setup
 
@@ -85,6 +89,13 @@ alias jarvis-server='source ~/Documents/projects/jarvis/.env && opencode serve -
 
 Then reload: `source ~/.zshrc`
 
+### 5. The persona (already wired)
+
+The repo ships an `opencode.json` that registers a `jarvis` agent whose prompt is
+`persona/AGENTS.md`. opencode loads it automatically, and the client just
+references `agent: "jarvis"` on every turn. No setup needed — unless you want to
+tune the butler voice, in which case edit `persona/AGENTS.md`.
+
 ## Usage
 
 ```bash
@@ -125,49 +136,47 @@ This project uses **vertical slicing** — each slice is a thin end-to-end user 
 
 ### Test seam
 
-The `brain` module's interface with `opencode serve` is the primary test seam — mockable with `respx`. Pure functions (sentence splitter, event stream parser) have their own unit tests.
+The `OpenCodeBrain` adapter (`infrastructure/opencode/brain_client.py`) is the primary test seam — its httpx calls are mocked with `respx`. Pure functions (sentence splitter, event stream parser) have their own unit tests.
 
 ### Code style
 
 `ruff` for linting, `pytest` + `pytest-asyncio` for tests, `respx` for mocking httpx, type hints throughout.
 
-## Planned project structure
+## Project structure
 
 ```
 jarvis/
-├── main.py                 # entry point
-├── jarvis/
-│   ├── brain.py            # opencode HTTP client
-│   ├── event_stream.py     # SSE parser
-│   ├── sentence_splitter.py
-│   ├── ear.py              # mic + wake + STT
-│   ├── mouth.py            # Edge TTS + say fallback
-│   ├── ui.py               # Rich terminal panels
-│   └── mcp/
-│       ├── system_actions/ # apps, volume, battery, time
-│       └── dev_actions/    # file, project, show, find/grep, git, run tests
-├── jarvis_home/            # opencode project dir
-│   ├── AGENTS.md           # persona, refusal patterns
-│   ├── notes/              # long-term memory
-│   │   ├── user.md
-│   │   ├── preferences.md
-│   │   └── projects.md
-│   └── docs/adr/           # architectural decisions
+├── main.py                     # entry point (composition root)
+├── opencode.json               # defines the "jarvis" agent → persona/AGENTS.md
+├── domain/                     # ports + pure logic, no infra deps
+│   ├── brain.py                # Brain protocol + TurnResult value object
+│   └── text/
+│       └── sentence_splitter.py
+├── application/                # use cases (planned)
+│   └── assistant.py            # orchestration loop (planned)
+├── infrastructure/             # adapters over libraries and services
+│   └── opencode/
+│       ├── brain_client.py     # OpenCodeBrain — httpx client over opencode serve
+│       └── event_stream.py     # SSE parser
+├── persona/
+│   └── AGENTS.md               # JARVIS persona (butler voice)
+├── senses/                     # planned: ear.py (wake + STT), mouth.py (TTS), eye.py
 ├── tests/
-├── launchd/
-│   └── com.user.jarvis.plist
-├── scripts/
-│   └── update.sh
 ├── docs/
 │   ├── PRD.md
 │   ├── ARCHITECTURE.md
-│   ├── BACKGROUND.md
-│   ├── CONTEXT.md          # TBD
-│   └── adr/                # TBD
-├── requirements.txt
+│   └── BACKGROUND.md
+├── scripts/
+│   └── pre-commit              # ruff on branch diff vs main
+├── pyproject.toml
+├── uv.lock
 ├── .env.example
 └── README.md
 ```
+
+Planned but not yet built: `application/assistant.py`, the `senses/` voice I/O
+(`ear`, `mouth`, `eye`), the MCP wrappers, long-term memory (`notes/`), and the
+LaunchAgent auto-start.
 
 ## Troubleshooting
 

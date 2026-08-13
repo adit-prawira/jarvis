@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from core.event_stream import Event, EventStream
+from infrastructure.opencode.event_stream import Event, EventStream
 
 
 parse = EventStream.parse_event

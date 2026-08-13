@@ -4,7 +4,7 @@ import pytest
 import respx
 from httpx import Response
 
-from core.brain import Brain, TurnResult
+from infrastructure.opencode.brain_client import OpenCodeBrain
 
 
 BASE_URL = "http://127.0.0.1:4096"
@@ -14,8 +14,8 @@ MESSAGE_ID = "msg-xyz789"
 
 
 @pytest.fixture
-def brain() -> Brain:
-    return Brain(base_url=BASE_URL, password=PASSWORD)
+def brain() -> OpenCodeBrain:
+    return OpenCodeBrain(base_url=BASE_URL, password=PASSWORD)
 
 
 # — boundary: creates session on first send_turn —
@@ -114,11 +114,10 @@ async def test_given_mixed_parts_then_only_text_joined(brain):
     assert "tool_call" in [part["type"] for part in result.parts]
 
 
-# — boundary: sends persona when provided —
+# — boundary: sends the agent reference —
 @pytest.mark.asyncio
 @respx.mock
-async def test_given_persona_then_system_field_sent():
-    persona_content = "You are JARVIS. Address user as sir."
+async def test_given_agent_then_agent_field_sent(brain):
     respx.post(f"{BASE_URL}/session").mock(
         return_value=Response(200, json={"id": SESSION_ID})
     )
@@ -128,65 +127,9 @@ async def test_given_persona_then_system_field_sent():
             "parts": [{"type": "text", "text": "Yes, sir."}],
         })
     )
-    with respx.mock:
-        message_mock
-        session_mock = respx.post(f"{BASE_URL}/session").mock(
-            return_value=Response(200, json={"id": SESSION_ID})
-        )
-        message_mock = respx.post(f"{BASE_URL}/session/{SESSION_ID}/message").mock(
-            return_value=Response(200, json={
-                "info": {"id": MESSAGE_ID},
-                "parts": [{"type": "text", "text": "Yes, sir."}],
-            })
-        )
-    # Temporary file-based approach: write persona, test brain reads it
-    import tempfile
-    from pathlib import Path
-
-    persona_file = Path(tempfile.mkstemp(suffix=".md")[1])
-    persona_file.write_text(persona_content)
-
-    try:
-        respx.post(f"{BASE_URL}/session").mock(
-            return_value=Response(200, json={"id": SESSION_ID})
-        )
-        persona_brain_message = respx.post(
-            f"{BASE_URL}/session/{SESSION_ID}/message"
-        ).mock(
-            return_value=Response(200, json={
-                "info": {"id": MESSAGE_ID},
-                "parts": [{"type": "text", "text": "Yes, sir."}],
-            })
-        )
-        persona_brain = Brain(
-            base_url=BASE_URL,
-            password=PASSWORD,
-            persona_path=str(persona_file),
-        )
-        await persona_brain.send_turn("Hello")
-        request_body = persona_brain_message.calls[0].request.read().decode()
-        assert "system" in request_body
-        assert persona_content in request_body
-    finally:
-        persona_file.unlink()
-
-
-# — false-positive guard: no persona = no system field —
-@pytest.mark.asyncio
-@respx.mock
-async def test_given_no_persona_then_no_system_field(brain):
-    respx.post(f"{BASE_URL}/session").mock(
-        return_value=Response(200, json={"id": SESSION_ID})
-    )
-    message_mock = respx.post(f"{BASE_URL}/session/{SESSION_ID}/message").mock(
-        return_value=Response(200, json={
-            "info": {"id": MESSAGE_ID},
-            "parts": [{"type": "text", "text": "Hello."}],
-        })
-    )
-    await brain.send_turn("test")
+    await brain.send_turn("Hello")
     request_body = message_mock.calls[0].request.read().decode()
-    assert '"system"' not in request_body
+    assert '"agent":"jarvis"' in request_body
 
 
 # — boundary: abort sends correct request —
@@ -214,7 +157,7 @@ async def test_given_abort_then_posts_correct_endpoint(brain):
 @pytest.mark.asyncio
 @respx.mock
 async def test_given_abort_before_session_then_no_request():
-    brain = Brain(base_url=BASE_URL, password=PASSWORD)
+    brain = OpenCodeBrain(base_url=BASE_URL, password=PASSWORD)
     await brain.abort()
     # No session ID, abort silently — no HTTP call made.
     # If a call was made, httpx would have errored on the unknown route.

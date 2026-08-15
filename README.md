@@ -214,18 +214,3 @@ This was the `@tarquinen/opencode-dcp` plugin — already removed from `~/.confi
 
 Full context in [docs/BACKGROUND.md](docs/BACKGROUND.md).
 
-## Contributing
-
-This is a personal project. Not accepting contributions. But if you fork it and build something cool, I'd love to hear about it.
-
-## License
-
-Personal use. No license granted.
-
-## Credits
-
-- opencode — the brain, the tools, the session model
-- mlx-whisper — Apple Silicon STT
-- openWakeWord — wake word detection
-- Edge TTS — free neural TTS, `en-GB-RyanNeural` British male voice
-- Iron Man — the aesthetic

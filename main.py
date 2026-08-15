@@ -1,7 +1,8 @@
 from application.assistant import Assistant
 from infrastructure.sense.openwakeword_ear import OpenWakeWordDetector, OpenWakeWordEar
 
-def main() -> None: 
+
+def main() -> None:
     ear = OpenWakeWordEar(detector=OpenWakeWordDetector())
     Assistant(ear=ear).run()
 

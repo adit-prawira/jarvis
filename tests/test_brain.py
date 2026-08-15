@@ -2,10 +2,9 @@
 
 import pytest
 import respx
-from httpx import Response
+from httpx import HTTPStatusError, Response
 
 from infrastructure.opencode.brain_client import OpenCodeBrain
-
 
 BASE_URL = "http://127.0.0.1:4096"
 PASSWORD = "test-password"
@@ -174,7 +173,7 @@ async def test_given_server_error_then_raises(brain):
     respx.post(f"{BASE_URL}/session/{SESSION_ID}/message").mock(
         return_value=Response(500, json={"error": "internal"})
     )
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPStatusError):
         await brain.send_turn("Hello")
 
 

@@ -1,17 +1,18 @@
 import numpy as np
+
 from domain.senses.ear import Ear, WakeWordDetector
 from domain.wake_word import WakeWordScore
 
 WAKE_MODEL_NAME = "hey_jarvis"
 DEFAULT_THRESHOLD = 0.5
 SAMPLE_RATE = 16_000
-CHUNK_SAMPLES = 1280 # 80ms at 16kHz 
+CHUNK_SAMPLES = 1280 # 80ms at 16kHz
 
 class OpenWakeWordDetector(WakeWordDetector):
-    """Wake-word scoering backed by openwakeword's pre-trained model
-    
+    """Wake-word scoring backed by openwakeword's pre-trained model.
+
     openwakeword will be imported lazily so importing this adapter never
-    triggers the heavy model dependency
+    triggers the heavy model dependency.
     """
 
     def __init__(self, model_name: str = WAKE_MODEL_NAME) -> None:
@@ -25,7 +26,7 @@ class OpenWakeWordDetector(WakeWordDetector):
     def score(self, audio_chunk: np.ndarray) -> WakeWordScore:
         results = self._model.predict(audio_chunk)
         scores = results[0] if isinstance(results, tuple) else results
-        confidence = max(scores.values()) if scores else 0.0 
+        confidence = max(scores.values()) if scores else 0.0
         return WakeWordScore(
             model_name=self._model_name,
             confidence=confidence
@@ -40,16 +41,22 @@ class OpenWakeWordEar(Ear):
         self._threshold = threshold
 
     def listen_for_wake_command(self) -> None:
-        import sounddevice as sd 
-        wake_detected = False 
+        import sounddevice as sd
+        wake_detected = False
 
         def handle_audio(indata, frames, time_info, status) -> None:
-            nonlocal wake_detected  
+            nonlocal wake_detected
             score = self._detector.score(indata[:, 0])
             if score.exceeds(self._threshold):
-                wake_detected = True 
+                wake_detected = True
                 raise sd.CallbackStop
 
-        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=CHUNK_SAMPLES, callback=handle_audio):
+        with sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="int16",
+            blocksize=CHUNK_SAMPLES,
+            callback=handle_audio,
+        ):
             while not wake_detected:
                 sd.sleep(100)

@@ -5,7 +5,6 @@ import pytest
 
 from infrastructure.opencode.event_stream import Event, EventStream
 
-
 parse = EventStream.parse_event
 
 

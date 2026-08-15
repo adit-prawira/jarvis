@@ -1,4 +1,4 @@
-"""Unit tests for SentenceSplitter — given/then format.
+r"""Unit tests for SentenceSplitter — given/then format.
 
 The splitter uses the regex `(?<=[.!?])\s+` — it only flushes when
 punctuation is followed by whitespace (a next sentence or trailing space).
@@ -6,7 +6,6 @@ Standalone "Hello, sir." without trailing whitespace stays in the buffer
 until flush() is called or the next delta arrives starting with whitespace.
 """
 
-import pytest
 from domain.text.sentence_splitter import SentenceSplitter
 
 

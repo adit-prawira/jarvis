@@ -1,27 +1,9 @@
-import asyncio
-import os
+from application.assistant import Assistant
+from infrastructure.sense.openwakeword_ear import OpenWakeWordDetector, OpenWakeWordEar
 
-from dotenv import load_dotenv
+def main() -> None: 
+    ear = OpenWakeWordEar(detector=OpenWakeWordDetector())
+    Assistant(ear=ear).run()
 
-from infrastructure.opencode.brain_client import OpenCodeBrain
-
-
-async def main() -> None:
-    load_dotenv()
-    password = os.getenv("OPENCODE_SERVER_PASSWORD")
-    if not password:
-        print("ERROR: OPENCODE_SERVER_PASSWORD not set in .env")
-        return
-
-    brain = OpenCodeBrain(
-        base_url="http://127.0.0.1:4096",
-        password=password,
-    )
-    try:
-        result = await brain.send_turn("Hello, who are you?")
-        print(result.text)
-    finally:
-        await brain.close()
-
-
-asyncio.run(main())
+if __name__ == "__main__":
+    main()

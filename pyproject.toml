@@ -21,6 +21,7 @@ dependencies = [
     "numpy>=2.5.2",
     "openwakeword>=0.4.0",
     "sounddevice>=0.5.5",
+    "mlx-whisper>=0.4.3; sys_platform == 'darwin'",
 ]
 
 [tool.uv]

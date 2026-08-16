@@ -7,6 +7,7 @@ into sys.modules so the lazy import resolves without the heavy MLX dependency.
 
 import sys
 from types import ModuleType
+from typing import Any
 
 import numpy as np
 import pytest
@@ -20,10 +21,12 @@ class StubMlxWhisper:
     """Records transcribe calls and returns a fixed, padded result."""
 
     def __init__(self) -> None:
-        self.calls: list[tuple[np.ndarray, str]] = []
+        self.calls: list[tuple[np.ndarray, str, dict[str, Any]]] = []
 
-    def transcribe(self, audio: np.ndarray, *, path_or_hf_repo: str) -> dict:
-        self.calls.append((audio, path_or_hf_repo))
+    def transcribe(
+        self, audio: np.ndarray, *, path_or_hf_repo: str, **decode_options: Any
+    ) -> dict:
+        self.calls.append((audio, path_or_hf_repo, decode_options))
         return {"text": "  hello sir  "}
 
 
@@ -65,3 +68,17 @@ def test_given_custom_model_then_forwards_custom_model(stub_mlx_whisper):
     transcriber = MlxWhisperTranscriber(model="mlx-community/whisper-large-v3")
     transcriber.transcribe(np.zeros(4, dtype=np.int16))
     assert stub_mlx_whisper.calls[0][1] == "mlx-community/whisper-large-v3"
+
+
+# — false-positive guard: English must be explicitly pinned, not a stub default —
+def test_given_transcribe_then_forces_english_language(stub_mlx_whisper):
+    transcriber = MlxWhisperTranscriber()
+    transcriber.transcribe(np.zeros(4, dtype=np.int16))
+    assert stub_mlx_whisper.calls[0][2].get("language") == "en"
+
+
+# — false-positive guard: greedy decoding must be explicitly pinned, not a stub default —
+def test_given_transcribe_then_uses_greedy_decoding(stub_mlx_whisper):
+    transcriber = MlxWhisperTranscriber()
+    transcriber.transcribe(np.zeros(4, dtype=np.int16))
+    assert stub_mlx_whisper.calls[0][2].get("temperature") == 0.0

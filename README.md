@@ -136,7 +136,7 @@ This project uses **vertical slicing** — each slice is a thin end-to-end user 
 
 ### Test seam
 
-The `OpenCodeBrain` adapter (`infrastructure/opencode/brain_client.py`) is the primary test seam — its httpx calls are mocked with `respx`. Pure functions (sentence splitter, event stream parser) have their own unit tests.
+The `OpenCodeBrain` adapter (`infrastructure/opencode/brain_client.py`) is the primary test seam — its httpx calls are mocked with `respx`. Pure functions (sentence splitter, event stream parser, silence detector) have their own unit tests, and `MlxWhisperTranscriber` is tested with a stubbed `mlx_whisper`.
 
 ### Code style
 
@@ -150,17 +150,23 @@ jarvis/
 ├── opencode.json               # defines the "jarvis" agent → persona/AGENTS.md
 ├── domain/                     # ports + pure logic, no infra deps
 │   ├── brain.py                # Brain protocol + TurnResult value object
+│   ├── wake_word.py            # WakeWordScore value object
+│   ├── senses/
+│   │   ├── ear.py              # Ear + WakeWordDetector + Transcriber protocols
+│   │   └── silence_detector.py # RMS-based end-of-turn detector
 │   └── text/
 │       └── sentence_splitter.py
-├── application/                # use cases (planned)
-│   └── assistant.py            # orchestration loop (planned)
+├── application/
+│   └── assistant.py            # orchestration loop (wake → transcribe)
 ├── infrastructure/             # adapters over libraries and services
-│   └── opencode/
-│       ├── brain_client.py     # OpenCodeBrain — httpx client over opencode serve
-│       └── event_stream.py     # SSE parser
+│   ├── opencode/
+│   │   ├── brain_client.py     # OpenCodeBrain — httpx client over opencode serve
+│   │   └── event_stream.py     # SSE parser
+│   └── sense/
+│       ├── openwakeword_ear.py        # wake word (openwakeword + sounddevice)
+│       └── mlx_whisper_transcriber.py # STT (mlx-whisper, Apple Silicon)
 ├── persona/
 │   └── AGENTS.md               # JARVIS persona (butler voice)
-├── senses/                     # planned: ear.py (wake + STT), mouth.py (TTS), eye.py
 ├── tests/
 ├── docs/
 │   ├── PRD.md
@@ -174,9 +180,9 @@ jarvis/
 └── README.md
 ```
 
-Planned but not yet built: `application/assistant.py`, the `senses/` voice I/O
-(`ear`, `mouth`, `eye`), the MCP wrappers, long-term memory (`notes/`), and the
-LaunchAgent auto-start.
+Planned but not yet built: `mouth.py` (TTS output), `ui.py` (Rich terminal UI), the
+MCP wrappers (`system_actions`, `dev_actions`), long-term memory (`notes/`), and
+the LaunchAgent auto-start.
 
 ## Troubleshooting
 
@@ -200,7 +206,7 @@ remains. Check your internet connection and that `edge-tts` is installed.
 ### JARVIS isn't responding to "hey jarvis"
 
 - Check mic input is working (System Settings → Sound → Input)
-- Try lowering the wake word threshold in `ear.py` (default 0.5)
+- Try lowering the wake word threshold in `infrastructure/sense/openwakeword_ear.py` (default 0.5)
 - Check for false-positive ambient noise
 
 ### Slash command auto-compression appears

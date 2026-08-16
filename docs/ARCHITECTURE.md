@@ -1,6 +1,6 @@
 # Architecture — JARVIS Voice Assistant
 
-**Status:** Draft v1
+**Status:** Draft v1 (synced to code 2026-08-16)
 **Date:** 2026-08-08
 **Companion docs:** [PRD.md](./PRD.md) · [CONTEXT.md](./CONTEXT.md) (TBD) · [docs/adr/](./adr/) (TBD)
 
@@ -87,60 +87,74 @@ The architecture is a thin voice skin over a thick existing tool. Every componen
 
 ## 3. Components
 
-### 3.1 `ear.py` — Voice input pipeline
+> **Current status:** Phase 0 (brain), wake word, and STT are built and merged.
+> `mouth`, `ui`, the MCP wrappers, and `notes/` are still planned. Module paths below
+> reflect the DDD layout (`domain/` = ports + pure logic, `application/` = use cases,
+> `infrastructure/` = adapters), not the original flat `jarvis/` layout.
+
+### 3.1 Voice input — `domain/senses/ear.py` + `infrastructure/sense/`
 
 **Responsibility:** Wake word detection + speech-to-text.
 
-| Sub-component | Library | Notes |
+The `Ear` protocol (`domain/senses/ear.py`) exposes `listen_for_wake_command()` and
+`transcribe_utterance()`. `OpenWakeWordEar` (`infrastructure/sense/openwakeword_ear.py`)
+implements both over a `sounddevice` input stream.
+
+| Sub-component | Library | Where |
 |---|---|---|
-| Wake word | `openwakeword` | "hey jarvis" model, threshold ~0.5, push-to-talk deferred |
-| STT | `mlx-whisper` | Apple Silicon native, ~1-2s for short utterances |
-| Audio capture | `sounddevice` | Input stream, blocking on wake word callback |
-| End-of-turn | silence detector (custom) | 1.5-2s of silence → end turn |
+| Wake word | `openwakeword` | `OpenWakeWordDetector` in `openwakeword_ear.py` |
+| STT | `mlx-whisper` | `MlxWhisperTranscriber` in `mlx_whisper_transcriber.py` |
+| Audio capture | `sounddevice` | `OpenWakeWordEar` input stream (16 kHz, int16, 80 ms chunks) |
+| End-of-turn | RMS silence detector (custom) | `SilenceDetector` in `domain/senses/silence_detector.py`, 1.5 s default |
 
-**Test seam:** exposes `transcribe(audio_bytes: bytes) -> str` interface so it can be tested without real audio.
+**Test seam:** `SilenceDetector` (pure numpy) and `MlxWhisperTranscriber` (stubbed
+`mlx_whisper`) are unit-tested without real audio. The `sounddevice` recording loop
+is integration-only.
 
-### 3.2 `brain.py` — Conversation engine
+### 3.2 Conversation engine — `domain/brain.py` + `infrastructure/opencode/brain_client.py`
 
 **Responsibility:** All communication with `opencode serve`.
 
+The `Brain` protocol (`domain/brain.py`) is implemented by `OpenCodeBrain`
+(`infrastructure/opencode/brain_client.py`).
+
 | Concern | Mechanism |
 |---|---|
-| Session lifecycle | `POST /session` on launch, reuse across turns |
-| Send message | `POST /session/:id/message` (sync or async) |
-| Stream response | `GET /event` SSE, accumulate `message.part.delta` events |
+| Session lifecycle | `POST /session` on first turn, reuse across turns |
+| Send message | `POST /session/:id/message` (synchronous — blocks until full response) |
+| Stream response | `GET /event` SSE (parser in `event_stream.py`, not yet wired into the loop) |
 | Abort turn | `POST /session/:id/abort` on barge-in |
-| Persona | driven by `AGENTS.md` in `jarvis_home/` (opencode project dir) |
+| Persona | the `jarvis` agent in `opencode.json` → `persona/AGENTS.md` |
 
-**Test seam:** httpx client mockable with `respx`. Tests exercise session creation, message send, SSE event accumulation, and abort.
+**Test seam:** httpx client mockable with `respx`. Tests exercise session creation, message send, and abort.
 
-### 3.3 `event_stream.py` — SSE parser
+### 3.3 SSE parser — `infrastructure/opencode/event_stream.py`
 
 **Responsibility:** Convert raw SSE bytes into typed events.
 
-**Output shape** (matches opencode SDK):
+**Output shape:**
 ```python
 class Event:
-    type: Literal["message.part.delta", "session.idle", "session.error", "tool.call"]
+    type: Literal["message.updated", "session.idle", "session.error", "server.connected"]
     data: dict
 ```
 
 **Test seam:** pure function over byte stream, fast unit tests.
 
-### 3.4 `sentence_splitter.py` — Text chunker
+### 3.4 Text chunker — `domain/text/sentence_splitter.py`
 
 **Responsibility:** Accumulate text deltas, flush complete sentences to TTS.
 
 **Algorithm:**
 1. Append each delta to buffer
-2. Look for sentence boundary: `re.split(r'(?<=[.!?])\s+', buffer)`
+2. Look for sentence boundary: `re.compile(r"(?<=[.!?])\s+")` via `.search()`
 3. Flush complete sentences immediately
 4. If buffer exceeds 200 chars without a boundary, flush on word boundary (avoid starvation)
 5. Flush remainder on `session.idle` event
 
 **Test seam:** pure function over list of deltas. Many small unit tests.
 
-### 3.5 `mouth.py` — Voice output pipeline
+### 3.5 Voice output pipeline — `mouth.py` (planned)
 
 **Responsibility:** Text → speech via Microsoft Edge TTS + audio playback. Falls back to macOS `say` when the voice API is unreachable.
 
@@ -153,7 +167,7 @@ class Event:
 
 **Test seam:** TTS and playback separable. Test text-to-bytes without playing sound.
 
-### 3.6 `ui.py` — Rich terminal UI
+### 3.6 Rich terminal UI — `ui.py` (planned)
 
 **Responsibility:** Display what JARVIS is doing (for dev/debug; in production, mostly silent).
 
@@ -164,14 +178,17 @@ class Event:
 | Tool calls | current tool, last N tools |
 | Errors | recent errors with stack traces |
 
-### 3.7 `main.py` — Orchestration
+### 3.7 Orchestration — `main.py` + `application/assistant.py` (partial)
 
 **Responsibility:** Wire all components together. The "main loop."
+
+Currently implemented: `Assistant.run()` loops `listen_for_wake_command()` →
+`transcribe_utterance()` → print the transcript. The full loop below is the target:
 
 ```
 while True:
     wait for wake
-    prompt = ear.transcribe_until_silence()
+    prompt = ear.transcribe_utterance()
     if prompt in dismissals: continue
     if prompt in farewells: sign_off(); break
     if not prompt: timeout_or_prompt(); continue
@@ -185,7 +202,7 @@ while True:
     if idle_timeout(): break
 ```
 
-### 3.8 MCP wrappers — Action layer
+### 3.8 MCP wrappers — Action layer (planned)
 
 **Two MCP servers**, each running as a small Python process that opencode spawns:
 
@@ -209,18 +226,17 @@ while True:
 
 **Path scope:** every dev action resolves paths against `~/Documents/projects/` and rejects anything outside. No exceptions.
 
-### 3.9 `notes/` — Long-term memory
+### 3.9 Long-term memory — `notes/` (planned)
 
-A directory inside `jarvis_home/` (the opencode project dir) where the LLM can read and write.
+A directory where the LLM can read and write long-term memory. The persona lives
+in `persona/AGENTS.md` (wired via the `jarvis` agent in `opencode.json`); the
+separate `jarvis_home/` project dir described in early planning no longer exists.
 
 ```
-jarvis_home/
-├── AGENTS.md          ← persona, capabilities, refusal patterns
-├── notes/
-│   ├── user.md        ← user's name, role, preferences
-│   ├── preferences.md ← "I prefer dark mode", etc.
-│   └── projects.md    ← alias map: "JARVIS" → jarvis/, "monoflow" → monoflow/
-└── docs/adr/          ← architectural decision records
+notes/
+├── user.md        ← user's name, role, preferences
+├── preferences.md ← "I prefer dark mode", etc.
+└── projects.md    ← alias map: "JARVIS" → jarvis/, "monoflow" → monoflow/
 ```
 
 The `write` tool is whitelisted only on this path. The MCP wrapper enforces this.
@@ -377,7 +393,7 @@ The MCP wrappers are the policy enforcement boundary. opencode sees only the wra
 **Invariants the LLM cannot violate** (enforced in MCP wrappers, not in the prompt):
 1. Shell commands can only be from the system_actions / dev_actions whitelist
 2. Dev action file paths must resolve under `~/Documents/projects/`
-3. Writes are only allowed to `jarvis_home/notes/`
+3. Writes are only allowed to `notes/`
 4. Bash can only be invoked through the MCP wrapper, which filters before exec
 
 ---

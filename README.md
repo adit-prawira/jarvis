@@ -172,8 +172,7 @@ jarvis/
 │   ├── PRD.md
 │   ├── ARCHITECTURE.md
 │   └── BACKGROUND.md
-├── scripts/
-│   └── pre-commit              # ruff on branch diff vs main
+├── .pre-commit-config.yaml     # ruff check --fix on staged files
 ├── pyproject.toml
 ├── uv.lock
 ├── .env.example

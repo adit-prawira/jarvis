@@ -107,6 +107,11 @@ implements both over a `sounddevice` input stream.
 | Audio capture | `sounddevice` | `OpenWakeWordEar` input stream (16 kHz, int16, 80 ms chunks) |
 | End-of-turn | RMS silence detector (custom) | `SilenceDetector` in `domain/senses/silence_detector.py`, 1.5 s default |
 
+**STT accuracy:** `MlxWhisperTranscriber.transcribe()` pins `language="en"` and
+`temperature=0.0` (greedy decoding) so short English commands decode deterministically.
+Whisper's default language auto-detect and temperature fallback hallucinate on
+quiet/noisy input; both are disabled here.
+
 **Test seam:** `SilenceDetector` (pure numpy) and `MlxWhisperTranscriber` (stubbed
 `mlx_whisper`) are unit-tested without real audio. The `sounddevice` recording loop
 is integration-only.

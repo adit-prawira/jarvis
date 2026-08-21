@@ -18,9 +18,6 @@ class MlxWhisperTranscriber(Transcriber):
 
         normalised = audio_chunk.astype(np.float32) / 32768.0
         results: dict[str, Any] = mlx_whisper.transcribe(
-            normalised,
-            path_or_hf_repo=self._model,
-            temperature=0.0,
-            language="en"
+            normalised, path_or_hf_repo=self._model, temperature=0.0, language="en"
         )
         return results["text"].strip()

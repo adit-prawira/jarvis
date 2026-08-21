@@ -5,7 +5,14 @@ from typing import Literal, get_args
 
 import httpx
 
-EventType = Literal["message.updated", "session.idle", "session.error", "server.connected"]
+EventType = Literal[
+    "message.updated",
+    "message.part.delta",
+    "message.part.updated",
+    "session.idle",
+    "session.error",
+    "server.connected",
+]
 
 ALLOWED_EVENTS = get_args(EventType)
 

@@ -80,3 +80,38 @@ def test_given_reset_after_silence_then_next_feed_is_false():
     detector.feed(SILENT)  # 5
     detector.reset()
     assert detector.feed(SILENT) is False
+
+
+# — speech onset: a fresh detector has not heard speech —
+def test_given_new_detector_then_speech_not_started():
+    assert build_detector().speech_started is False
+
+
+# — speech onset: silent chunks do not mark speech —
+def test_given_silent_chunk_then_speech_not_started():
+    detector = build_detector()
+    detector.feed(SILENT)
+    assert detector.speech_started is False
+
+
+# — speech onset: a loud chunk marks speech —
+def test_given_loud_chunk_then_speech_started():
+    detector = build_detector()
+    detector.feed(LOUD)
+    assert detector.speech_started is True
+
+
+# — speech onset: once started, later silence does not unset it —
+def test_given_silence_after_speech_then_speech_still_started():
+    detector = build_detector()
+    detector.feed(LOUD)
+    detector.feed(SILENT)
+    assert detector.speech_started is True
+
+
+# — speech onset: reset clears the flag —
+def test_given_reset_after_speech_then_speech_not_started():
+    detector = build_detector()
+    detector.feed(LOUD)
+    detector.reset()
+    assert detector.speech_started is False

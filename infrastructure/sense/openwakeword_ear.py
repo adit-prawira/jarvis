@@ -73,21 +73,33 @@ class OpenWakeWordEar(Ear):
             while not wake_detected:
                 sd.sleep(100)
 
-    def transcribe_utterance(self) -> str:
+    def transcribe_utterance(self, timeout: float) -> str | None:
         import sounddevice as sd
 
         frames: list[np.ndarray] = []
         total_samples = 0
         turn_ended = False
+        is_timeout = False
+        silence_samples = int(timeout * SAMPLE_RATE)
+        leading_silent_samples = 0
 
         def handle_audio(indata, *rest) -> None:
-            nonlocal total_samples, turn_ended
+            nonlocal total_samples, turn_ended, is_timeout, silence_samples, leading_silent_samples
             chunk = indata[:, 0].copy()
+            trailing_silence = self._silence_detector.feed(chunk)
+            if not self._silence_detector.speech_started:
+                leading_silent_samples += chunk.size
+                if leading_silent_samples >= silence_samples:
+                    is_timeout = True
+                    turn_ended = True
+                    raise sd.CallbackStop
+                return
+
             frames.append(chunk)
             total_samples += chunk.size
 
             is_silence_detected = (
-                self._silence_detector.feed(chunk)
+                trailing_silence
                 or total_samples >= self._max_utterance_samples
             )
             if is_silence_detected:
@@ -104,6 +116,9 @@ class OpenWakeWordEar(Ear):
         ):
             while not turn_ended:
                 sd.sleep(100)
+
+        if is_timeout:
+            return None
 
         audio = np.concatenate(frames) if frames else np.zeros(0, dtype=np.int16)
         return self._transcriber.transcribe(audio)

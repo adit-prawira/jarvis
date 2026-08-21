@@ -23,6 +23,7 @@ class SilenceDetector:
     @property
     def speech_started(self) -> bool:
         return self._speech_started
+
     def feed(self, chunk: np.ndarray) -> bool:
         samples = chunk.astype(np.float64)
         squares = np.square(samples)

@@ -23,9 +23,7 @@ class StubMlxWhisper:
     def __init__(self) -> None:
         self.calls: list[tuple[np.ndarray, str, dict[str, Any]]] = []
 
-    def transcribe(
-        self, audio: np.ndarray, *, path_or_hf_repo: str, **decode_options: Any
-    ) -> dict:
+    def transcribe(self, audio: np.ndarray, *, path_or_hf_repo: str, **decode_options: Any) -> dict:
         self.calls.append((audio, path_or_hf_repo, decode_options))
         return {"text": "  hello sir  "}
 

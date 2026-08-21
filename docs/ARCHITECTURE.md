@@ -1,6 +1,6 @@
 # Architecture — JARVIS Voice Assistant
 
-**Status:** Draft v1 (synced to code 2026-08-16)
+**Status:** Draft v1 (synced to code 2026-08-21)
 **Date:** 2026-08-08
 **Companion docs:** [PRD.md](./PRD.md) · [CONTEXT.md](./CONTEXT.md) (TBD) · [docs/adr/](./adr/) (TBD)
 
@@ -87,8 +87,9 @@ The architecture is a thin voice skin over a thick existing tool. Every componen
 
 ## 3. Components
 
-> **Current status:** Phase 0 (brain), wake word, and STT are built and merged.
-> `mouth`, `ui`, the MCP wrappers, and `notes/` are still planned. Module paths below
+> **Current status:** Phases 0–1 (brain, wake word, STT, and the wake-no-command
+> timeout) are built and merged. `mouth`, `ui`, the MCP wrappers, and `notes/` are
+> still planned. Module paths below
 > reflect the DDD layout (`domain/` = ports + pure logic, `application/` = use cases,
 > `infrastructure/` = adapters), not the original flat `jarvis/` layout.
 
@@ -97,8 +98,10 @@ The architecture is a thin voice skin over a thick existing tool. Every componen
 **Responsibility:** Wake word detection + speech-to-text.
 
 The `Ear` protocol (`domain/senses/ear.py`) exposes `listen_for_wake_command()` and
-`transcribe_utterance()`. `OpenWakeWordEar` (`infrastructure/sense/openwakeword_ear.py`)
-implements both over a `sounddevice` input stream.
+`transcribe_utterance(timeout: float) -> str | None`. `OpenWakeWordEar`
+(`infrastructure/sense/openwakeword_ear.py`) implements both over a `sounddevice`
+input stream; `transcribe_utterance` returns `None` when the no-command timeout
+elapses before any speech.
 
 | Sub-component | Library | Where |
 |---|---|---|
@@ -106,6 +109,14 @@ implements both over a `sounddevice` input stream.
 | STT | `mlx-whisper` | `MlxWhisperTranscriber` in `mlx_whisper_transcriber.py` |
 | Audio capture | `sounddevice` | `OpenWakeWordEar` input stream (16 kHz, int16, 80 ms chunks) |
 | End-of-turn | RMS silence detector (custom) | `SilenceDetector` in `domain/senses/silence_detector.py`, 1.5 s default |
+| No-command timeout | leading-silence tracking (`speech_started`) | `OpenWakeWordEar.transcribe_utterance(timeout)`, 30 s / 5 s set by `Assistant` |
+
+**Wake-no-command timeout:** after wake, `Assistant` calls
+`transcribe_utterance(timeout=30.0)`; if the user never speaks, the ear returns
+`None`, the assistant prints an "are you there, sir?" prompt, then listens 5 s more
+(`timeout=5.0`) before returning to wake. `SilenceDetector.feed()` flips
+`speech_started` `True` on the first non-silent chunk, and the ear discards leading
+silent chunks so the 10 s utterance cap starts at speech onset, not wake.
 
 **STT accuracy:** `MlxWhisperTranscriber.transcribe()` pins `language="en"` and
 `temperature=0.0` (greedy decoding) so short English commands decode deterministically.
@@ -113,8 +124,9 @@ Whisper's default language auto-detect and temperature fallback hallucinate on
 quiet/noisy input; both are disabled here.
 
 **Test seam:** `SilenceDetector` (pure numpy) and `MlxWhisperTranscriber` (stubbed
-`mlx_whisper`) are unit-tested without real audio. The `sounddevice` recording loop
-is integration-only.
+`mlx_whisper`) are unit-tested without real audio. `OpenWakeWordEar.transcribe_utterance`
+is unit-tested with a stubbed `sounddevice` stream (its `sleep` drives the callback
+with scripted chunks), and the `Assistant` orchestration is tested with a fake `Ear`.
 
 ### 3.2 Conversation engine — `domain/brain.py` + `infrastructure/opencode/brain_client.py`
 
@@ -187,8 +199,11 @@ class Event:
 
 **Responsibility:** Wire all components together. The "main loop."
 
-Currently implemented: `Assistant.run()` loops `listen_for_wake_command()` →
-`transcribe_utterance()` → print the transcript. The full loop below is the target:
+Currently implemented: `Assistant.run()` loops `_listen_for_a_command()`, which
+waits for the wake word, greets once per session, then transcribes with a 30 s
+no-command timeout; on `None` it prompts "are you there, sir?" and listens 5 s more
+before returning to wake. The transcript is printed (no brain or mouth yet). The
+full loop below is the target:
 
 ```
 while True:
@@ -313,6 +328,7 @@ class Ear:
     async def transcribe_utterance() -> str: ...
     async def check_barge_in() -> bool: ...  # background, non-blocking
 
+
 # brain.py
 class Brain:
     async def __init__(self, base_url: str, auth: str) -> None: ...
@@ -320,15 +336,18 @@ class Brain:
     async def send_turn(self, session_id: str, text: str) -> AsyncIterator[Event]: ...
     async def abort(self, session_id: str) -> None: ...
 
+
 # sentence_splitter.py
 class SentenceSplitter:
     def feed(self, delta: str) -> Iterator[str]: ...  # yields complete sentences
     def flush(self) -> str | None: ...  # returns remainder on end-of-stream
 
+
 # mouth.py
 class Mouth:
     async def speak(self, text: str) -> None: ...
     def stop(self) -> None: ...  # immediate, drain not required
+
 
 # ui.py
 class UI:

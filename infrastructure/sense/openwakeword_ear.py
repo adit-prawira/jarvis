@@ -7,8 +7,9 @@ from domain.wake_word import WakeWordScore
 WAKE_MODEL_NAME = "hey_jarvis"
 DEFAULT_THRESHOLD = 0.5
 SAMPLE_RATE = 16_000
-CHUNK_SAMPLES = 1280 # 80ms at 16kHz
+CHUNK_SAMPLES = 1280  # 80ms at 16kHz
 MAX_UTTERANCE_SECONDS = 10.0
+
 
 class OpenWakeWordDetector(WakeWordDetector):
     """Wake-word scoring backed by openwakeword's pre-trained model.
@@ -20,6 +21,7 @@ class OpenWakeWordDetector(WakeWordDetector):
     def __init__(self, model_name: str = WAKE_MODEL_NAME) -> None:
         import openwakeword
         from openwakeword.model import Model
+
         super().__init__()
         self._model_name = model_name
         model_path = openwakeword.models[model_name]["model_path"]
@@ -29,10 +31,8 @@ class OpenWakeWordDetector(WakeWordDetector):
         results = self._model.predict(audio_chunk)
         scores = results[0] if isinstance(results, tuple) else results
         confidence = max(scores.values()) if scores else 0.0
-        return WakeWordScore(
-            model_name=self._model_name,
-            confidence=confidence
-        )
+        return WakeWordScore(model_name=self._model_name, confidence=confidence)
+
 
 class OpenWakeWordEar(Ear):
     """A microphone-backed ear: sounddevice stream feeding a detector"""
@@ -54,6 +54,7 @@ class OpenWakeWordEar(Ear):
 
     def listen_for_wake_command(self) -> None:
         import sounddevice as sd
+
         wake_detected = False
 
         def handle_audio(indata, *rest) -> None:
@@ -98,10 +99,7 @@ class OpenWakeWordEar(Ear):
             frames.append(chunk)
             total_samples += chunk.size
 
-            is_silence_detected = (
-                trailing_silence
-                or total_samples >= self._max_utterance_samples
-            )
+            is_silence_detected = trailing_silence or total_samples >= self._max_utterance_samples
             if is_silence_detected:
                 turn_ended = True
                 raise sd.CallbackStop

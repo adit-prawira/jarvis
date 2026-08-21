@@ -136,7 +136,7 @@ This project uses **vertical slicing** — each slice is a thin end-to-end user 
 
 ### Test seam
 
-The `OpenCodeBrain` adapter (`infrastructure/opencode/brain_client.py`) is the primary test seam — its httpx calls are mocked with `respx`. Pure functions (sentence splitter, event stream parser, silence detector) have their own unit tests, and `MlxWhisperTranscriber` is tested with a stubbed `mlx_whisper`.
+The `OpenCodeBrain` adapter (`infrastructure/opencode/brain_client.py`) is the primary test seam — its httpx calls are mocked with `respx`. Pure functions (sentence splitter, event stream parser, silence detector) have their own unit tests, `MlxWhisperTranscriber` is tested with a stubbed `mlx_whisper`, `OpenWakeWordEar.transcribe_utterance` is tested with a stubbed `sounddevice` stream, and the `Assistant` orchestration is tested with a fake `Ear`.
 
 ### Code style
 
@@ -153,11 +153,11 @@ jarvis/
 │   ├── wake_word.py            # WakeWordScore value object
 │   ├── senses/
 │   │   ├── ear.py              # Ear + WakeWordDetector + Transcriber protocols
-│   │   └── silence_detector.py # RMS-based end-of-turn detector
+│   │   └── silence_detector.py # RMS end-of-turn + speech onset
 │   └── text/
 │       └── sentence_splitter.py
 ├── application/
-│   └── assistant.py            # orchestration loop (wake → transcribe)
+│   └── assistant.py            # orchestration loop (wake → transcribe → timeout prompt)
 ├── infrastructure/             # adapters over libraries and services
 │   ├── opencode/
 │   │   ├── brain_client.py     # OpenCodeBrain — httpx client over opencode serve

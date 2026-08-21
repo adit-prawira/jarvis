@@ -10,10 +10,12 @@ class WakeWordDetector(Protocol):
 
     def score(self, audio_chunk: np.ndarray) -> WakeWordScore: ...
 
+
 class Transcriber(Protocol):
     """Speech-to-text port. Utilise MlxWhisperTranscriber over mlx-whisper"""
 
     def transcribe(self, audio_chunk: np.ndarray) -> str: ...
+
 
 class Ear(Protocol):
     """The hearing sense of JARVIS, this will allow the personal assistant to process word"""

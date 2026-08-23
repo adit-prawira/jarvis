@@ -87,12 +87,12 @@ The architecture is a thin voice skin over a thick existing tool. Every componen
 
 ## 3. Components
 
-> **Current status:** Phases 0–1 and the first Phase 2 slice (Slice 8 — sentence-level
-> TTS streaming) are built and merged. The `Mouth` port and a `ConsoleMouth` placeholder
-> are wired in; the Edge TTS voice (Slice 9), `ui`, the MCP wrappers, and `notes/` are
-> still planned. Module paths below reflect the DDD layout (`domain/` = ports + pure
-> logic, `application/` = use cases, `infrastructure/` = adapters), not the original
-> flat `jarvis/` layout.
+> **Current status:** Phases 0–1 and the first two Phase 2 slices (Slice 8 — sentence-level
+> TTS streaming; Slice 9 — Edge TTS voice) are built and merged. The `Mouth` port is wired
+> to `EdgeTtsMouth` (edge-tts → miniaudio → sounddevice); `ui`, the MCP wrappers, `notes/`,
+> and the macOS `say` fallback are still planned. Module paths below reflect the DDD layout
+> (`domain/` = ports + pure logic, `application/` = use cases, `infrastructure/` =
+> adapters), not the original flat `jarvis/` layout.
 
 ### 3.1 Voice input — `domain/senses/ear.py` + `infrastructure/sense/`
 
@@ -180,22 +180,28 @@ class Event:
 
 **Test seam:** pure function over list of deltas. Many small unit tests.
 
-### 3.5 Voice output — `domain/senses/mouth.py` (partial)
+### 3.5 Voice output — `domain/senses/mouth.py` + `infrastructure/sense/edge_tts_mouth.py`
 
-**Responsibility:** Text → speech via Microsoft Edge TTS + audio playback. Falls back to macOS `say` when the voice API is unreachable.
+**Responsibility:** Text → speech via Microsoft Edge TTS + audio playback. The macOS `say` fallback is planned (Slice `#86`), not yet built.
 
-Currently the `Mouth` protocol (`speak`, `stop`, both async) exists in
-`domain/senses/mouth.py`, and `main.py` wires a `ConsoleMouth` placeholder that just
-prints. Slice 9 replaces it with the real Edge TTS + `sounddevice` playback.
+The `Mouth` protocol (`speak`, `stop`, both async) lives in
+`domain/senses/mouth.py`. `EdgeTtsMouth` (`infrastructure/sense/edge_tts_mouth.py`)
+implements it: `speak` synthesizes text to PCM via the `synthesize` seam, then plays
+it; `stop` halts playback. `synthesize` streams MP3 from edge-tts
+(`en-GB-RyanNeural`), decodes it to int16 mono 24 kHz PCM via `miniaudio`, and returns
+the raw bytes. Playback runs on a worker thread (`asyncio.to_thread`).
 
 | Sub-component | Library | Notes |
 |---|---|---|
 | TTS (primary) | `edge-tts` | free neural TTS, `en-GB-RyanNeural` British male voice, streaming MP3 |
-| TTS (fallback) | macOS `say` | instant, local, zero cost, British voices (`daniel`) |
-| Playback | `sounddevice` | audio chunks → output stream |
-| Interruption | abort flag checked per chunk; full stop on barge-in signal | |
+| Decode | `miniaudio` | MP3 → int16 mono PCM (24 kHz) |
+| Playback | `sounddevice` | PCM bytes → output stream |
+| TTS (fallback, planned) | macOS `say` | instant, local, zero cost, British voices (`daniel`) |
 
-**Test seam:** TTS and playback separable. Test text-to-bytes without playing sound.
+**Test seam:** `EdgeTtsMouth.synthesize` (text → PCM bytes) is the seam.
+`tests/test_edge_tts_mouth.py` stubs edge_tts, miniaudio, and sounddevice in
+`sys.modules` and asserts audio-message filtering, voice forwarding, decode params,
+and `speak`/`stop` playback — no real audio.
 
 ### 3.6 Rich terminal UI — `ui.py` (planned)
 
@@ -480,7 +486,7 @@ The MCP wrappers are the policy enforcement boundary. opencode sees only the wra
 | STT | `mlx-whisper` | Apple Silicon native, fast, accurate |
 | Wake | `openwakeword` | open-source, no cloud |
 | TTS | `edge-tts` + macOS `say` fallback | free neural TTS, `en-GB-RyanNeural` British male voice, no API key |
-| Audio | `sounddevice` + `soundfile` + `numpy` | stdlib-ish, low-level enough for interruption |
+| Audio | `sounddevice` + `miniaudio` + `numpy` | low-level playback + MP3→PCM decode, enough for interruption |
 | UI | `rich` | terminal panels, low ceremony |
 | Config | `python-dotenv` | `.env` for API keys, server password |
 | Validation | `pydantic` | typed event shapes |

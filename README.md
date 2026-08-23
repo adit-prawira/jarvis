@@ -165,7 +165,8 @@ jarvis/
 │   │   └── event_stream.py     # SSE parser
 │   └── sense/
 │       ├── openwakeword_ear.py        # wake word (openwakeword + sounddevice)
-│       └── mlx_whisper_transcriber.py # STT (mlx-whisper, Apple Silicon)
+│       ├── mlx_whisper_transcriber.py # STT (mlx-whisper, Apple Silicon)
+│       └── edge_tts_mouth.py          # TTS (edge-tts → miniaudio → sounddevice)
 ├── persona/
 │   └── AGENTS.md               # JARVIS persona (butler voice)
 ├── tests/
@@ -180,10 +181,9 @@ jarvis/
 └── README.md
 ```
 
-Planned but not yet built: the Edge TTS voice (Slice 9) and macOS `say` fallback that
-will replace `ConsoleMouth`, `ui.py` (Rich terminal UI), the MCP wrappers
-(`system_actions`, `dev_actions`), long-term memory (`notes/`), and the LaunchAgent
-auto-start.
+Planned but not yet built: the macOS `say` fallback, `ui.py` (Rich terminal UI), the
+MCP wrappers (`system_actions`, `dev_actions`), long-term memory (`notes/`), and the
+LaunchAgent auto-start.
 
 ## Troubleshooting
 
@@ -201,8 +201,9 @@ System Settings → Privacy & Security → Microphone → enable for your termin
 
 ### Edge TTS unreachable
 
-JARVIS falls back to macOS `say` (system TTS). Persona is lost but functionality
-remains. Check your internet connection and that `edge-tts` is installed.
+The macOS `say` fallback is planned (Slice `#86`) but not yet built — for now a failed
+Edge TTS call surfaces as an error. Check your internet connection and that `edge-tts`
+is installed.
 
 ### JARVIS isn't responding to "hey jarvis"
 

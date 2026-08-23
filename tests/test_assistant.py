@@ -99,12 +99,11 @@ async def test_given_speech_during_grace_then_transcribes(capsys):
 
 
 # — greeting: welcome is spoken once across multiple wake cycles —
-async def test_given_two_wake_cycles_then_welcome_printed_once(capsys):
-    assistant, ear, _, _ = build_assistant("first", "second")
+async def test_given_two_wake_cycles_then_welcome_spoken_once():
+    assistant, ear, mouth, _ = build_assistant("first", "second")
     await assistant._listen_for_a_command()
     await assistant._listen_for_a_command()
-    output = capsys.readouterr().out
-    assert output.count(WELCOME_MESSAGE) == 1
+    assert mouth.spoken.count(WELCOME_MESSAGE) == 1
     assert ear.wake_calls == 2
 
 
@@ -134,3 +133,19 @@ async def test_given_utterance_then_brain_receives_it():
     assistant, _, _, brain = build_assistant("hello", deltas=())
     await assistant._respond("hello")
     assert brain.messages == ["hello"]
+
+
+# — sanitise: markdown in the brain response is stripped before speaking —
+async def test_given_markdown_response_then_speaks_sanitised_sentences():
+    assistant, _, mouth, _ = build_assistant(
+        "hello", deltas=("**Hello**, sir. ", "[see docs](https://x).")
+    )
+    await assistant._respond("hello")
+    assert mouth.spoken == ["Hello, sir.", "see docs."]
+
+
+# — sanitise: a sentence that strips to empty is not spoken —
+async def test_given_markdown_only_sentence_then_skipped():
+    assistant, _, mouth, _ = build_assistant("hello", deltas=("Hello, sir. --- ",))
+    await assistant._respond("hello")
+    assert mouth.spoken == ["Hello, sir."]

@@ -3,6 +3,7 @@ import asyncio
 from domain.brain import Brain
 from domain.senses.ear import Ear
 from domain.senses.mouth import Mouth
+from domain.text.markdown_stripper import MarkdownStripper
 from domain.text.sentence_splitter import SentenceSplitter
 
 NO_COMMAND_TIMEOUT_SECONDS = 30.0
@@ -28,7 +29,7 @@ class Assistant:
     async def _listen_for_a_command(self) -> None:
         await asyncio.to_thread(self._ear.listen_for_wake_command)
         if not self._is_welcomed:
-            print(WELCOME_MESSAGE)
+            await self._mouth.speak(WELCOME_MESSAGE)
             self._is_welcomed = True
         utterance = await asyncio.to_thread(
             self._ear.transcribe_utterance, NO_COMMAND_TIMEOUT_SECONDS
@@ -47,7 +48,17 @@ class Assistant:
         splitter = SentenceSplitter()
         async for response_text_chunk in self._brain.stream_turn(utterance):
             for sentence in splitter.feed(response_text_chunk):
-                await self._mouth.speak(sentence)
+                sanitised_sentence = MarkdownStripper.strip(sentence)
+                if not sanitised_sentence:
+                    continue
+                await self._mouth.speak(sanitised_sentence)
+
         remainder = splitter.flush()
-        if remainder:
-            await self._mouth.speak(remainder)
+        if not remainder:
+            return None
+
+        sanitised_remainder = MarkdownStripper.strip(remainder)
+        if not sanitised_remainder:
+            return None
+
+        await self._mouth.speak(sanitised_remainder)

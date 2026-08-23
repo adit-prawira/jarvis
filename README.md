@@ -136,7 +136,7 @@ This project uses **vertical slicing** — each slice is a thin end-to-end user 
 
 ### Test seam
 
-The `OpenCodeBrain` adapter (`infrastructure/opencode/brain_client.py`) is the primary test seam — its httpx calls are mocked with `respx`. Pure functions (sentence splitter, event stream parser, silence detector) have their own unit tests, `MlxWhisperTranscriber` is tested with a stubbed `mlx_whisper`, `OpenWakeWordEar.transcribe_utterance` is tested with a stubbed `sounddevice` stream, and the `Assistant` orchestration is tested with a fake `Ear`.
+The `OpenCodeBrain` adapter (`infrastructure/opencode/brain_client.py`) is the primary test seam — its httpx calls are mocked with `respx`. Pure functions (sentence splitter, event stream parser, silence detector) have their own unit tests, `MlxWhisperTranscriber` is tested with a stubbed `mlx_whisper`, `OpenWakeWordEar.transcribe_utterance` is tested with a stubbed `sounddevice` stream, and the `Assistant` orchestration is tested with a fake `Ear`, `Brain`, and `Mouth`.
 
 ### Code style
 
@@ -153,11 +153,12 @@ jarvis/
 │   ├── wake_word.py            # WakeWordScore value object
 │   ├── senses/
 │   │   ├── ear.py              # Ear + WakeWordDetector + Transcriber protocols
+│   │   ├── mouth.py            # Mouth protocol (speak, stop)
 │   │   └── silence_detector.py # RMS end-of-turn + speech onset
 │   └── text/
 │       └── sentence_splitter.py
 ├── application/
-│   └── assistant.py            # orchestration loop (wake → transcribe → timeout prompt)
+│   └── assistant.py            # orchestration loop (wake → transcribe → brain stream → speak)
 ├── infrastructure/             # adapters over libraries and services
 │   ├── opencode/
 │   │   ├── brain_client.py     # OpenCodeBrain — httpx client over opencode serve
@@ -179,9 +180,10 @@ jarvis/
 └── README.md
 ```
 
-Planned but not yet built: `mouth.py` (TTS output), `ui.py` (Rich terminal UI), the
-MCP wrappers (`system_actions`, `dev_actions`), long-term memory (`notes/`), and
-the LaunchAgent auto-start.
+Planned but not yet built: the Edge TTS voice (Slice 9) and macOS `say` fallback that
+will replace `ConsoleMouth`, `ui.py` (Rich terminal UI), the MCP wrappers
+(`system_actions`, `dev_actions`), long-term memory (`notes/`), and the LaunchAgent
+auto-start.
 
 ## Troubleshooting
 

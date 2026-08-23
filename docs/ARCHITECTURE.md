@@ -1,6 +1,6 @@
 # Architecture — JARVIS Voice Assistant
 
-**Status:** Draft v1 (synced to code 2026-08-21)
+**Status:** Draft v1 (synced to code 2026-08-22)
 **Date:** 2026-08-08
 **Companion docs:** [PRD.md](./PRD.md) · [CONTEXT.md](./CONTEXT.md) (TBD) · [docs/adr/](./adr/) (TBD)
 
@@ -87,11 +87,12 @@ The architecture is a thin voice skin over a thick existing tool. Every componen
 
 ## 3. Components
 
-> **Current status:** Phases 0–1 (brain, wake word, STT, and the wake-no-command
-> timeout) are built and merged. `mouth`, `ui`, the MCP wrappers, and `notes/` are
-> still planned. Module paths below
-> reflect the DDD layout (`domain/` = ports + pure logic, `application/` = use cases,
-> `infrastructure/` = adapters), not the original flat `jarvis/` layout.
+> **Current status:** Phases 0–1 and the first Phase 2 slice (Slice 8 — sentence-level
+> TTS streaming) are built and merged. The `Mouth` port and a `ConsoleMouth` placeholder
+> are wired in; the Edge TTS voice (Slice 9), `ui`, the MCP wrappers, and `notes/` are
+> still planned. Module paths below reflect the DDD layout (`domain/` = ports + pure
+> logic, `application/` = use cases, `infrastructure/` = adapters), not the original
+> flat `jarvis/` layout.
 
 ### 3.1 Voice input — `domain/senses/ear.py` + `infrastructure/sense/`
 
@@ -138,12 +139,13 @@ The `Brain` protocol (`domain/brain.py`) is implemented by `OpenCodeBrain`
 | Concern | Mechanism |
 |---|---|
 | Session lifecycle | `POST /session` on first turn, reuse across turns |
-| Send message | `POST /session/:id/message` (synchronous — blocks until full response) |
-| Stream response | `GET /event` SSE (parser in `event_stream.py`, not yet wired into the loop) |
+| Send message (blocking) | `POST /session/:id/message` (synchronous — blocks until full response) |
+| Send message (streaming) | `POST /session/:id/prompt_async` (no wait), then `GET /event` SSE for `message.part.delta` text chunks |
+| Reasoning filter | track reasoning part IDs from `message.part.updated`, skip their `message.part.delta` events |
 | Abort turn | `POST /session/:id/abort` on barge-in |
 | Persona | the `jarvis` agent in `opencode.json` → `persona/AGENTS.md` |
 
-**Test seam:** httpx client mockable with `respx`. Tests exercise session creation, message send, and abort.
+**Test seam:** httpx client mockable with `respx`. Tests exercise session creation, message send, abort, and `stream_turn` (delta yield, reasoning/cross-session filtering, `session.idle` termination).
 
 ### 3.3 SSE parser — `infrastructure/opencode/event_stream.py`
 
@@ -152,7 +154,14 @@ The `Brain` protocol (`domain/brain.py`) is implemented by `OpenCodeBrain`
 **Output shape:**
 ```python
 class Event:
-    type: Literal["message.updated", "session.idle", "session.error", "server.connected"]
+    type: Literal[
+        "message.updated",
+        "message.part.updated",
+        "message.part.delta",
+        "session.idle",
+        "session.error",
+        "server.connected",
+    ]
     data: dict
 ```
 
@@ -171,9 +180,13 @@ class Event:
 
 **Test seam:** pure function over list of deltas. Many small unit tests.
 
-### 3.5 Voice output pipeline — `mouth.py` (planned)
+### 3.5 Voice output — `domain/senses/mouth.py` (partial)
 
 **Responsibility:** Text → speech via Microsoft Edge TTS + audio playback. Falls back to macOS `say` when the voice API is unreachable.
+
+Currently the `Mouth` protocol (`speak`, `stop`, both async) exists in
+`domain/senses/mouth.py`, and `main.py` wires a `ConsoleMouth` placeholder that just
+prints. Slice 9 replaces it with the real Edge TTS + `sounddevice` playback.
 
 | Sub-component | Library | Notes |
 |---|---|---|
@@ -199,11 +212,14 @@ class Event:
 
 **Responsibility:** Wire all components together. The "main loop."
 
-Currently implemented: `Assistant.run()` loops `_listen_for_a_command()`, which
-waits for the wake word, greets once per session, then transcribes with a 30 s
-no-command timeout; on `None` it prompts "are you there, sir?" and listens 5 s more
-before returning to wake. The transcript is printed (no brain or mouth yet). The
-full loop below is the target:
+Currently implemented: `Assistant.run()` is async (one event loop for the whole app)
+and loops `_listen_for_a_command()`, which waits for the wake word and transcribes via
+`asyncio.to_thread` (the blocking sounddevice calls run on worker threads), greets once
+per session, then transcribes with a 30 s no-command timeout; on `None` it prompts "are
+you there, sir?" and listens 5 s more before returning to wake. A transcript is sent to
+`_respond()`, which streams `brain.stream_turn(utterance)` through a `SentenceSplitter`
+and speaks each complete sentence (plus the flush remainder). The full loop below is
+the target:
 
 ```
 while True:
@@ -272,11 +288,11 @@ The `write` tool is whitelisted only on this path. The MCP wrapper enforces this
   └─▶ ear.openwakeword (background)
         └─▶ wake detected → start recording
               └─▶ ear.mlx_whisper(audio) → "what time is it"
-                    └─▶ brain.send_turn("what time is it")
-                          └─▶ opencode (POST /session/:id/message)
+                    └─▶ brain.stream_turn("what time is it")
+                          └─▶ opencode (POST /session/:id/prompt_async)
                                 └─▶ LLM (sees AGENTS.md, notes/, tools)
                                       └─▶ response delta: "Certainly,"
-                                            └─▶ brain.stream (SSE /event)
+                                            └─▶ brain.stream_turn yields message.part.delta (SSE /event)
                                                   └─▶ splitter.feed("Certainly,")
                                                         └─▶ buffer too small, no flush
                                                   └─▶ response delta: " sir. The time is 14:32."
@@ -324,17 +340,16 @@ The `write` tool is whitelisted only on this path. The MCP wrapper enforces this
 ```python
 # ear.py
 class Ear:
-    async def listen_for_wake() -> None: ...
-    async def transcribe_utterance() -> str: ...
-    async def check_barge_in() -> bool: ...  # background, non-blocking
+    def listen_for_wake_command() -> None: ...  # blocking; run via asyncio.to_thread
+    def transcribe_utterance(timeout: float) -> str | None: ...
 
 
 # brain.py
 class Brain:
-    async def __init__(self, base_url: str, auth: str) -> None: ...
-    async def create_session() -> str: ...  # returns session_id
-    async def send_turn(self, session_id: str, text: str) -> AsyncIterator[Event]: ...
-    async def abort(self, session_id: str) -> None: ...
+    async def send_turn(message: str) -> TurnResult: ...  # blocking, full response
+    def stream_turn(message: str) -> AsyncIterator[str]: ...  # yields text deltas
+    async def abort() -> None: ...
+    async def close() -> None: ...
 
 
 # sentence_splitter.py
@@ -346,7 +361,7 @@ class SentenceSplitter:
 # mouth.py
 class Mouth:
     async def speak(self, text: str) -> None: ...
-    def stop(self) -> None: ...  # immediate, drain not required
+    async def stop(self) -> None: ...  # immediate, drain not required
 
 
 # ui.py
@@ -363,11 +378,13 @@ class UI:
 |---|---|---|
 | `GET` | `/global/health` | liveness check |
 | `POST` | `/session` | create session, returns `{id}` |
-| `POST` | `/session/:id/message` | send a turn (sync or async) |
+| `POST` | `/session/:id/message` | send a turn, blocks until full response |
+| `POST` | `/session/:id/prompt_async` | send a turn without waiting (returns 204) |
 | `GET` | `/event` | SSE stream of session events |
 | `POST` | `/session/:id/abort` | abort current turn |
 
-`Authorization: Bearer ${OPENCODE_SERVER_PASSWORD}` header on all calls.
+All calls use `Authorization: Basic opencode:<password>` (`httpx.BasicAuth`), where
+`<password>` is `OPENCODE_SERVER_PASSWORD` from `.env`.
 
 ### 5.3 Tool policy (enforced in MCP + opencode config)
 

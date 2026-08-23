@@ -35,7 +35,7 @@ class Assistant:
             self._ear.transcribe_utterance, NO_COMMAND_TIMEOUT_SECONDS
         )
         if utterance is None:
-            print(ARE_YOU_THERE_MESSAGE)
+            await self._mouth.speak(ARE_YOU_THERE_MESSAGE)
             utterance = await asyncio.to_thread(
                 self._ear.transcribe_utterance, POST_PROMPT_GRACE_SECONDS
             )

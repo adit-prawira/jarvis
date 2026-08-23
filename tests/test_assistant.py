@@ -80,20 +80,20 @@ async def test_given_command_within_timeout_then_transcribes_without_prompt(caps
 
 # — timeout: no command in 30s prompts, then 5s more of silence returns to wake —
 async def test_given_no_command_then_prompts_and_returns_on_further_silence(capsys):
-    assistant, ear, _, _ = build_assistant(None, None)
+    assistant, ear, mouth, _ = build_assistant(None, None)
     await assistant._listen_for_a_command()
     output = capsys.readouterr().out
-    assert ARE_YOU_THERE_MESSAGE in output
+    assert mouth.spoken.count(ARE_YOU_THERE_MESSAGE) == 1
     assert "Transcribe:" not in output
     assert ear.timeouts == [NO_COMMAND_TIMEOUT_SECONDS, POST_PROMPT_GRACE_SECONDS]
 
 
 # — grace period: speech during the 5s post-prompt wait is transcribed —
 async def test_given_speech_during_grace_then_transcribes(capsys):
-    assistant, ear, _, _ = build_assistant(None, "what time is it")
+    assistant, ear, mouth, _ = build_assistant(None, "what time is it")
     await assistant._listen_for_a_command()
     output = capsys.readouterr().out
-    assert ARE_YOU_THERE_MESSAGE in output
+    assert mouth.spoken.count(ARE_YOU_THERE_MESSAGE) == 1
     assert "Transcribe: what time is it" in output
     assert ear.timeouts == [NO_COMMAND_TIMEOUT_SECONDS, POST_PROMPT_GRACE_SECONDS]
 

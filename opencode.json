@@ -3,6 +3,7 @@
   "agent": {
     "jarvis": {
       "mode": "primary",
+      "model": "opencode-go/deepseek-v4-flash",
       "prompt": "{file:./persona/AGENTS.md}"
     }
   }

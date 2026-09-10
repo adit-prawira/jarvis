@@ -14,6 +14,7 @@ from application.assistant import (
     ARE_YOU_THERE_MESSAGE,
     NO_COMMAND_TIMEOUT_SECONDS,
     POST_PROMPT_GRACE_SECONDS,
+    SIGN_OFF_MESSAGE,
     WELCOME_MESSAGE,
     Assistant,
 )
@@ -71,40 +72,78 @@ def build_assistant(
 # — happy path: a command within the timeout is transcribed, no prompt —
 async def test_given_command_within_timeout_then_transcribes_without_prompt(capsys):
     assistant, ear, _, _ = build_assistant("open Safari")
-    await assistant._listen_for_a_command()
-    output = capsys.readouterr().out
-    assert "Transcribe: open Safari" in output
-    assert ARE_YOU_THERE_MESSAGE not in output
+    utterance = await assistant._listen_for_next_utterance()
+    assert utterance == "open Safari"
+    assert ARE_YOU_THERE_MESSAGE not in capsys.readouterr().out
     assert ear.timeouts == [NO_COMMAND_TIMEOUT_SECONDS]
 
 
 # — timeout: no command in 30s prompts, then 5s more of silence returns to wake —
 async def test_given_no_command_then_prompts_and_returns_on_further_silence(capsys):
     assistant, ear, mouth, _ = build_assistant(None, None)
-    await assistant._listen_for_a_command()
-    output = capsys.readouterr().out
+    utterance = await assistant._listen_for_next_utterance()
+    assert utterance is None
     assert mouth.spoken.count(ARE_YOU_THERE_MESSAGE) == 1
-    assert "Transcribe:" not in output
     assert ear.timeouts == [NO_COMMAND_TIMEOUT_SECONDS, POST_PROMPT_GRACE_SECONDS]
 
 
 # — grace period: speech during the 5s post-prompt wait is transcribed —
 async def test_given_speech_during_grace_then_transcribes(capsys):
     assistant, ear, mouth, _ = build_assistant(None, "what time is it")
-    await assistant._listen_for_a_command()
-    output = capsys.readouterr().out
+    utterance = await assistant._listen_for_next_utterance()
+    assert utterance == "what time is it"
     assert mouth.spoken.count(ARE_YOU_THERE_MESSAGE) == 1
-    assert "Transcribe: what time is it" in output
     assert ear.timeouts == [NO_COMMAND_TIMEOUT_SECONDS, POST_PROMPT_GRACE_SECONDS]
 
 
 # — greeting: welcome is spoken once across multiple wake cycles —
 async def test_given_two_wake_cycles_then_welcome_spoken_once():
     assistant, ear, mouth, _ = build_assistant("first", "second")
-    await assistant._listen_for_a_command()
-    await assistant._listen_for_a_command()
+    await assistant._wait_for_wake_and_greet()
+    await assistant._wait_for_wake_and_greet()
     assert mouth.spoken.count(WELCOME_MESSAGE) == 1
     assert ear.wake_calls == 2
+
+
+# — _is_farewell: phrase matching —
+def test_given_thanks_then_is_farewell():
+    assert Assistant._is_farewell("thanks") is True
+
+
+def test_given_thanks_with_punctuation_then_is_farewell():
+    assert Assistant._is_farewell("thanks!") is True
+    assert Assistant._is_farewell("goodbye.") is True
+
+
+def test_given_uppercase_then_is_farewell():
+    assert Assistant._is_farewell("Thanks") is True
+    assert Assistant._is_farewell("GOODBYE") is True
+
+
+def test_given_non_farewell_utterance_then_not_farewell():
+    assert Assistant._is_farewell("open Safari") is False
+    assert Assistant._is_farewell("") is False
+
+
+# — _hold_conversation: multi-turn loop —
+async def test_given_two_consecutive_utterances_then_both_turns_run_without_re_wake():
+    assistant, ear, _, brain = build_assistant("what time", "thanks jarvis")
+    await assistant._hold_conversation()
+    assert brain.messages == ["what time"]
+    assert ear.wake_calls == 0
+
+
+async def test_given_farewell_then_signs_off_and_returns_to_wake():
+    assistant, _, mouth, brain = build_assistant("thanks")
+    await assistant._hold_conversation()
+    assert mouth.spoken == [SIGN_OFF_MESSAGE]
+    assert brain.messages == []
+
+
+async def test_given_silence_during_conversation_then_returns_to_wake():
+    assistant, _, _, brain = build_assistant("hi", None, None)
+    await assistant._hold_conversation()
+    assert brain.messages == ["hi"]
 
 
 # — streaming: a response is split into sentences and spoken in order —

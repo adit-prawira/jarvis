@@ -1,14 +1,14 @@
 # Architecture — JARVIS Voice Assistant
 
-**Status:** Draft v1 (synced to code 2026-08-22)
-**Date:** 2026-08-08
-**Companion docs:** [PRD.md](./PRD.md) · [CONTEXT.md](./CONTEXT.md) (TBD) · [docs/adr/](./adr/) (TBD)
+**Status:** Draft v2 (synced to code 2026-09-10)
+**Date:** 2026-09-10
+**Companion docs:** [PRD.md](./PRD.md) · [BACKGROUND.md](./BACKGROUND.md)
 
 ---
 
 ## 1. Overview
 
-JARVIS is a Python voice client that wraps `opencode serve` (an HTTP server the opencode CLI already exposes). The voice client listens for a wake word, transcribes speech, sends text to opencode, streams the LLM response, and speaks it through Microsoft Edge TTS (`en-GB-RyanNeural`, a free neural British male voice), falling back to macOS `say` when the API is unreachable. JARVIS gains the full power of opencode — file reading, web search, MCP tool calls — without re-implementing any of it.
+JARVIS is a Python voice client that wraps `opencode serve` (an HTTP server the opencode CLI already exposes). The voice client listens for a wake word, transcribes speech, sends text to opencode, streams the LLM response, and speaks it through Microsoft Edge TTS (`en-GB-RyanNeural`, a free neural British male voice). A macOS `say` fallback is planned but not yet built. JARVIS gains the full power of opencode — file reading, web search, MCP tool calls — without re-implementing any of it.
 
 The architecture is a thin voice skin over a thick existing tool. Every component outside the voice pipeline is either an opencode primitive, a third-party library, or a small MCP wrapper.
 
@@ -87,10 +87,12 @@ The architecture is a thin voice skin over a thick existing tool. Every componen
 
 ## 3. Components
 
-> **Current status:** Phases 0–1 and the first two Phase 2 slices (Slice 8 — sentence-level
-> TTS streaming; Slice 9 — Edge TTS voice) are built and merged. The `Mouth` port is wired
+> **Current status:** Phases 0–1 are merged, plus the first three Phase 2 slices
+> (Slice 8 — sentence-level TTS streaming; Slice 9 — Edge TTS voice;
+> Slice 10 — continuous dialog within a wake session). The `Mouth` port is wired
 > to `EdgeTtsMouth` (edge-tts → miniaudio → sounddevice); `ui`, the MCP wrappers, `notes/`,
-> and the macOS `say` fallback are still planned. Module paths below reflect the DDD layout
+> the macOS `say` fallback, and remaining Phase 3 conversation slices are still planned.
+> Module paths below reflect the DDD layout
 > (`domain/` = ports + pure logic, `application/` = use cases, `infrastructure/` =
 > adapters), not the original flat `jarvis/` layout.
 
@@ -218,30 +220,38 @@ and `speak`/`stop` playback — no real audio.
 
 **Responsibility:** Wire all components together. The "main loop."
 
-Currently implemented: `Assistant.run()` is async (one event loop for the whole app)
-and loops `_listen_for_a_command()`, which waits for the wake word and transcribes via
-`asyncio.to_thread` (the blocking sounddevice calls run on worker threads), greets once
-per session, then transcribes with a 30 s no-command timeout; on `None` it prompts "are
-you there, sir?" and listens 5 s more before returning to wake. A transcript is sent to
-`_respond()`, which streams `brain.stream_turn(utterance)` through a `SentenceSplitter`
-and speaks each complete sentence (plus the flush remainder). The full loop below is
-the target:
+Currently implemented: `Assistant.run()` is async (one event loop for the whole app).
+Each pass of the outer loop calls `_wait_for_wake_and_greet()` (blocks on the wake word
+via `asyncio.to_thread`; speaks the welcome greeting through the mouth on first wake
+per process), then `_hold_conversation()` — an inner loop that:
+
+1. Calls `_listen_for_next_utterance(timeout=30s)`, which uses `asyncio.to_thread` to
+   run the blocking `sounddevice` capture. If the user never speaks, the ear returns
+   `None` and the ear speaks "are you there, sir?" and listens 5 s more before
+   returning to wake.
+2. If the utterance is one of `FAREWELL_PHRASE` (normalised: stripped, lowercased,
+   trailing `.!` removed), speaks `SIGN_OFF_MESSAGE` ("Very good, Sir.") and returns
+   to the wake loop.
+3. Otherwise streams `brain.stream_turn(utterance)`, feeds each text delta through a
+   fresh `SentenceSplitter`, and speaks each flushed sentence through the mouth (after
+   `MarkdownStripper.strip()` removes formatting that would read awkwardly aloud). The
+   splitter's `flush()` remainder is spoken too. After the LLM goes idle, the inner
+   loop repeats from step 1 — no second wake word needed for follow-up turns.
+
+The pseudocode below is the **remaining** Phase 3 work (idle timeout, mid-wake
+dismissals, barge-in / abort) layered on top of the loop above:
 
 ```
 while True:
-    wait for wake
-    prompt = ear.transcribe_utterance()
-    if prompt in dismissals: continue
-    if prompt in farewells: sign_off(); break
-    if not prompt: timeout_or_prompt(); continue
-    brain.send_turn(prompt)
-    for delta in brain.stream():
-        if barge_in_detected():
-            brain.abort()
-            break
-        sentence = splitter.feed(delta)
-        if sentence: mouth.speak(sentence)
-    if idle_timeout(): break
+    wait_for_wake_and_greet()
+    hold_conversation():
+        while True:
+            utterance = listen_for_next_utterance()
+            if not utterance: return              # silence during conversation
+            if is_farewell(utterance): sign_off(); return
+            respond(utterance)
+            if idle_timeout(): return             # planned
+            # if barge_in_detected(): brain.abort(); mouth.stop()  # planned
 ```
 
 ### 3.8 MCP wrappers — Action layer (planned)
@@ -303,8 +313,8 @@ The `write` tool is whitelisted only on this path. The MCP wrapper enforces this
                                                         └─▶ buffer too small, no flush
                                                   └─▶ response delta: " sir. The time is 14:32."
                                                         └─▶ splitter.feed("Certainly, sir. The time is 14:32.")
-                                                              └─▶ flush "Certainly, sir." → mouth
-                                                              └─▶ flush "The time is 14:32." → mouth
+                                                              └─▶ flush "Certainly, sir." → MarkdownStripper.strip → mouth
+                                                              └─▶ flush "The time is 14:32." → MarkdownStripper.strip → mouth
                                                   └─▶ session.idle event
                                                         └─▶ splitter.flush() (no remainder)
   └─▶ mouth.speak("Certainly, sir.")  ─▶ speaker
@@ -485,7 +495,7 @@ The MCP wrappers are the policy enforcement boundary. opencode sees only the wra
 | HTTP client | `httpx` + `httpx-sse` | async-native, SSE support, OpenAPI ecosystem |
 | STT | `mlx-whisper` | Apple Silicon native, fast, accurate |
 | Wake | `openwakeword` | open-source, no cloud |
-| TTS | `edge-tts` + macOS `say` fallback | free neural TTS, `en-GB-RyanNeural` British male voice, no API key |
+| TTS | `edge-tts` (+ macOS `say` fallback, planned) | free neural TTS, `en-GB-RyanNeural` British male voice, no API key |
 | Audio | `sounddevice` + `miniaudio` + `numpy` | low-level playback + MP3→PCM decode, enough for interruption |
 | UI | `rich` | terminal panels, low ceremony |
 | Config | `python-dotenv` | `.env` for API keys, server password |
@@ -498,20 +508,30 @@ The MCP wrappers are the policy enforcement boundary. opencode sees only the wra
 
 ## 10. Architectural decisions (pointers)
 
-| ADR | Decision | Why it matters |
-|---|---|---|
-| [ADR-0001](./adr/0001-hybrid-session-model.md) | Hybrid session model | Fresh per launch + `notes/` for long-term |
-| [ADR-0002](./adr/0002-sentence-level-tts.md) | Sentence-level TTS streaming | Perceived latency vs simple whole-response TTS |
-| [ADR-0003](./adr/0003-mcp-bash-wrapper.md) | MCP wrapper for whitelisted bash | Policy enforcement, not prompt enforcement |
-| [ADR-0004](./adr/0004-tool-call-status.md) | Tool-call-aware status updates | User visibility into LLM activity |
-
-ADRs are written during Phase 0. Until then, the decisions live in the PRD and this doc.
+Decisions made during planning live in the PRD (locked items under "Architecture",
+"Tool policy", "Conversation model") and §5–§6 of this doc. ADRs were sketched in
+the PRD but never written to `docs/adr/` — the directory is reserved for future use
+when individual decisions need a longer rationale than inline prose.
 
 ---
 
 ## 11. Glossary
 
-See [CONTEXT.md](./CONTEXT.md) for the canonical glossary (20 terms: turn, barge-in, wake, filler, tool-call, quota, session, delta, flush, sentence, MCP, ADR, persona, alias, fall-back, abort, idle, dismiss, farewell, scope). Written in Phase 0.
+Core terms used throughout: **turn** (one user utterance → one JARVIS response),
+**barge-in** (user speaking mid-response, interrupts the LLM and TTS), **wake**
+("hey jarvis" keyword), **filler** (status phrase like "one moment, sir"),
+**tool-call** (LLM invoking an MCP-exposed action), **session** (one opencode
+conversation, reused across turns within a wake), **delta** (one SSE text chunk
+from the LLM), **flush** (sentence splitter releasing a complete sentence to TTS),
+**sentence** (one TTS unit, split on `[.!?] + space` or 200-char buffer cap),
+**MCP** (Model Context Protocol — the opencode tool boundary), **ADR**
+(architectural decision record, planned but not yet written), **persona** (the
+butler voice in `persona/AGENTS.md`), **alias** (project nickname in `notes/`,
+planned), **fall-back** (`say` after Edge TTS, planned), **abort** (kill the
+in-flight LLM turn), **idle** (10-min conversation timeout, planned), **dismiss**
+(mid-wake cancellation phrase like "never mind", planned), **farewell**
+(closing phrase that returns to wake), **scope** (dev-action path restriction to
+`~/Documents/projects/`, planned).
 
 ---
 

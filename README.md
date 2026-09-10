@@ -10,7 +10,7 @@ A J.A.R.V.I.S.-style voice assistant for the macOS desktop, built as a thin Pyth
 
 ## What it is
 
-JARVIS listens for "hey jarvis" via openWakeWord, transcribes via mlx-whisper, sends the text to a local `opencode serve` (already part of your stack) over HTTP, streams the LLM response via SSE, splits it into sentences, and speaks each through Microsoft Edge TTS (`en-GB-RyanNeural`), a free neural British male voice. Falls back to macOS `say` if the voice API is unreachable. A small MCP wrapper exposes system and developer actions.
+JARVIS listens for "hey jarvis" via openWakeWord, transcribes via mlx-whisper, sends the text to a local `opencode serve` (already part of your stack) over HTTP, streams the LLM response via SSE, splits it into sentences, and speaks each through Microsoft Edge TTS (`en-GB-RyanNeural`), a free neural British male voice. A macOS `say` fallback is planned (not yet built). A small MCP wrapper exposes system and developer actions.
 
 You can open apps, check the battery, run tests, grep code, switch projects — all hands-free, in a dry British butler persona.
 

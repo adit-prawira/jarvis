@@ -124,3 +124,57 @@ def test_given_leading_silence_then_discarded_from_transcription(monkeypatch):
 
     assert transcriber.received_audio is not None
     assert transcriber.received_audio.size == 2 * CHUNK_SAMPLES
+
+
+# — acceptance: ~1.5-2s trailing silence ends the turn —
+def test_given_speech_then_trailing_silence_ends_turn_after_duration(monkeypatch):
+    silence_detector = SilenceDetector(
+        sample_rate=SAMPLE_RATE, silence_threshold=100.0, silence_duration=1.5
+    )
+    transcriber = StubTranscriber("open safari")
+    ear = build_ear(transcriber, silence_detector)
+    chunks = [loud_chunk()] + [silent_chunk()] * 19
+    install_sounddevice_stub(monkeypatch, chunks)
+
+    result = ear.transcribe_utterance(timeout=30.0)
+
+    assert result == "open safari"
+    assert transcriber.received_audio is not None
+    # 1 loud + 19 silent chunks recorded (the 19th silent triggered end-of-turn)
+    assert transcriber.received_audio.size == 20 * CHUNK_SAMPLES
+
+
+# — acceptance: brief pause within utterance does NOT end the turn —
+def test_given_brief_pause_within_utterance_then_turn_continues(monkeypatch):
+    silence_detector = SilenceDetector(
+        sample_rate=SAMPLE_RATE, silence_threshold=100.0, silence_duration=1.5
+    )
+    transcriber = StubTranscriber("open safari")
+    ear = build_ear(transcriber, silence_detector)
+    chunks = [loud_chunk(), silent_chunk(), loud_chunk()] + [silent_chunk()] * 19
+    install_sounddevice_stub(monkeypatch, chunks)
+
+    result = ear.transcribe_utterance(timeout=30.0)
+
+    assert result == "open safari"
+    assert transcriber.received_audio is not None
+    # Both loud chunks recorded (brief 80ms pause did NOT end the turn)
+    assert transcriber.received_audio.size == 22 * CHUNK_SAMPLES
+
+
+# — backstop: 10s MAX_UTTERANCE_SECONDS cap ends runaway recordings —
+def test_given_utterance_exceeding_max_seconds_then_turn_ends_at_cap(monkeypatch):
+    silence_detector = SilenceDetector(
+        sample_rate=SAMPLE_RATE, silence_threshold=100.0, silence_duration=1.5
+    )
+    transcriber = StubTranscriber()
+    ear = build_ear(transcriber, silence_detector)
+    chunks = [loud_chunk()] * 130
+    install_sounddevice_stub(monkeypatch, chunks)
+
+    result = ear.transcribe_utterance(timeout=30.0)
+
+    assert result == "hello sir"
+    assert transcriber.received_audio is not None
+    # Capped at 10s (160_000 samples = 125 chunks); assert bounded near cap
+    assert transcriber.received_audio.size <= 160_000

@@ -1,22 +1,26 @@
+import logging
 from collections.abc import AsyncIterator
-from typing import Any
 
 import httpx
 
 from domain.brain import Brain, TurnResult
-from infrastructure.opencode.event_stream import EventStream
+from infrastructure.opencode.event_stream import Event, EventStream
+
+logger = logging.getLogger(__name__)
 
 
 class OpenCodeBrain(Brain):
-    """Concrete Brain adapter over opencode serve's synchronous HTTP API."""
-
     def __init__(
         self,
         base_url: str,
         password: str,
         agent: str = "jarvis",
+        model: str | None = None,
+        location: str | None = None,
     ) -> None:
         self._agent = agent
+        self._model = model
+        self._location = location
         self._session_id: str | None = None
         self._client = httpx.AsyncClient(
             base_url=base_url,
@@ -26,78 +30,32 @@ class OpenCodeBrain(Brain):
 
     async def send_turn(self, message: str) -> TurnResult:
         session_id = await self._resolve_session()
-        payload: dict[str, Any] = {
-            "parts": [{"type": "text", "text": message}],
-            "agent": self._agent,
-        }
+        chunks: list[str] = []
+        assistant_message_id: str | None = None
 
-        response = await self._client.post(f"/session/{session_id}/message", json=payload)
-        response.raise_for_status()
-        data = response.json()
-        parts = data.get("parts", [])
-        text = "".join(part.get("text", "") for part in parts if part.get("type") == "text")
+        async for event in self._turn_events(session_id, message):
+            if event.type == "session.step.started":
+                assistant_message_id = event.data.get("data", {}).get("assistantMessageID")
+            elif event.type == "session.text.delta":
+                chunks.append(event.data.get("data", {}).get("delta", ""))
 
         return TurnResult(
             session_id=session_id,
-            message_id=data.get("info", {}).get("id"),
-            text=text,
-            parts=parts,
+            message_id=assistant_message_id,
+            text="".join(chunks),
+            parts=[],
         )
 
     async def stream_turn(self, message: str) -> AsyncIterator[str]:
         session_id = await self._resolve_session()
-        async with self._client.stream("GET", "/event") as event_stream:
-            event_stream.raise_for_status()
-            payload: dict[str, Any] = {
-                "parts": [{"type": "text", "text": message}],
-                "agent": self._agent,
-            }
-            prompt_response = await self._client.post(
-                f"/session/{session_id}/prompt_async", json=payload
-            )
-            prompt_response.raise_for_status()
-            reasoning_part_ids: set[str] = set()
-
-            async for event in EventStream.parse_event(event_stream):
-                should_process_event = (
-                    event.type == "message.part.updated"
-                    or event.type == "message.part.delta"
-                    or event.type == "session.idle"
-                )
-                if not should_process_event:
-                    continue
-
-                if event.type == "message.part.updated":
-                    properties = event.data.get("properties", {})
-                    part = properties.get("part", {})
-                    is_jarvis_session = part.get("sessionID") == session_id
-                    is_reasoning = part.get("type") == "reasoning"
-                    should_add_reasoning_ids = is_jarvis_session and is_reasoning
-                    if not should_add_reasoning_ids:
-                        continue
-                    reasoning_part_ids.add(part.get("id"))
-                elif event.type == "message.part.delta":
-                    properties = event.data.get("properties", {})
-                    is_jarvis_session = properties.get("sessionID") == session_id
-                    is_reasoning = properties.get("partID") in reasoning_part_ids
-                    should_process_response_text_chunk = is_jarvis_session and not is_reasoning
-                    if not should_process_response_text_chunk:
-                        continue
-
-                    response_text_chunk = properties.get("delta")
-                    if not response_text_chunk:
-                        continue
-                    yield response_text_chunk
-                elif event.type == "session.idle":
-                    properties = event.data.get("properties", {})
-                    is_jarvis_session = properties.get("sessionID") == session_id
-                    if is_jarvis_session:
-                        return
+        async for event in self._turn_events(session_id, message):
+            if event.type == "session.text.delta":
+                yield event.data.get("data", {}).get("delta", "")
 
     async def abort(self) -> None:
         if self._session_id is None:
             return
-        await self._client.post(f"/session/{self._session_id}/abort")
+        await self._client.post(f"/api/session/{self._session_id}/interrupt")
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -106,9 +64,43 @@ class OpenCodeBrain(Brain):
         if self._session_id is not None:
             return self._session_id
 
-        response = await self._client.post("/session")
+        payload: dict[str, object] = {"agent": self._agent}
+        if self._model is not None:
+            payload["model"] = self._model_ref(self._model)
+        if self._location is not None:
+            payload["location"] = {"directory": self._location}
+
+        response = await self._client.post("/api/session", json=payload)
         response.raise_for_status()
+        logger.info("session create raw response: %s", response.text)
         data = response.json()
-        self._session_id = data.get("id", "")
+        self._session_id = data["data"]["id"]
         assert self._session_id is not None, "session_id is expected to be defined"
         return self._session_id
+
+    @staticmethod
+    def _model_ref(model: str) -> dict[str, str]:
+        provider_id, model_id = model.split("/", 1)
+        return {"id": model_id, "providerID": provider_id}
+
+    async def _turn_events(self, session_id: str, message: str) -> AsyncIterator[Event]:
+        async with self._client.stream("GET", "/api/event") as event_stream:
+            event_stream.raise_for_status()
+
+            prompt_response = await self._client.post(
+                f"/api/session/{session_id}/prompt",
+                json={"text": message},
+            )
+            prompt_response.raise_for_status()
+            logger.info("prompt raw response: %s", prompt_response.text)
+
+            async for event in EventStream.parse_event(event_stream):
+                if event.data.get("data", {}).get("sessionID") != session_id:
+                    continue
+                if event.type in ("session.step.started", "session.text.delta"):
+                    yield event
+                elif event.type in (
+                    "session.execution.succeeded",
+                    "session.execution.failed",
+                ):
+                    return

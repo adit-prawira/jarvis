@@ -43,7 +43,7 @@ class Assistant:
             if self._is_farewell(utterance):
                 await self._mouth.speak(SIGN_OFF_MESSAGE)
                 return
-
+            print(f"[UTTERANCE] -> {utterance}")
             await self._respond(utterance)
 
     async def _listen_for_next_utterance(self) -> str | None:

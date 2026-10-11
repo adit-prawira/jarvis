@@ -1,10 +1,9 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "agent": {
+  "agents": {
     "jarvis": {
-      "mode": "primary",
-      "model": "opencode-go/deepseek-v4-flash",
-      "prompt": "{file:./persona/AGENTS.md}"
+      "system": "{file:./persona/AGENTS.md}",
+      "model": "opencode-go/deepseek-v4-flash"
     }
   }
 }

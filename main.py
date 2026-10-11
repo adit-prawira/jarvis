@@ -1,5 +1,7 @@
 import asyncio
+import logging
 import os
+import pathlib
 
 from dotenv import load_dotenv
 
@@ -14,9 +16,13 @@ from infrastructure.sense.openwakeword_ear import (
     OpenWakeWordEar,
 )
 
+PROJECT_ROOT = pathlib.Path(__file__).parent.resolve()
+
 
 def main() -> None:
     load_dotenv()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
     ear = OpenWakeWordEar(
         detector=OpenWakeWordDetector(),
         transcriber=MlxWhisperTranscriber(),
@@ -27,7 +33,10 @@ def main() -> None:
         ),
     )
     brain = OpenCodeBrain(
-        base_url="http://127.0.0.1:4096", password=os.environ["OPENCODE_SERVER_PASSWORD"]
+        base_url="http://127.0.0.1:4096",
+        password=os.environ["OPENCODE_SERVER_PASSWORD"],
+        model="opencode-go/space-bunny",
+        location=str(PROJECT_ROOT),
     )
     mouth = EdgeTtsMouth()
 

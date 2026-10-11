@@ -28,91 +28,56 @@ def _make_async_response(*lines: str) -> httpx.Response:
     return httpx.Response(200, stream=_FakeAsyncStream(text.encode()))
 
 
-# — boundary: parses message.updated event —
+# — boundary: parses V2 session.text.delta event —
 @pytest.mark.asyncio
-async def test_given_message_updated_event_then_yields_correct_type():
+async def test_given_v2_text_delta_event_then_yields_it():
     response = _make_async_response(
-        'data: {"type": "message.updated", "message": {"id": "abc"}}',
+        'data: {"id":"evt_1","type":"session.text.delta",'
+        '"data":{"sessionID":"ses_1","assistantMessageID":"msg_1","ordinal":0,"delta":"Hello"}}',
     )
     events = [event async for event in parse(response)]
     assert len(events) == 1
-    assert events[0].type == "message.updated"
+    assert events[0].type == "session.text.delta"
+    assert events[0].data["data"]["delta"] == "Hello"
 
 
-# — boundary: parses session.idle event —
+# — boundary: parses V2 session.execution.succeeded event —
 @pytest.mark.asyncio
-async def test_given_session_idle_event_then_yields_idle():
+async def test_given_v2_execution_succeeded_event_then_yields_it():
     response = _make_async_response(
-        'data: {"type": "session.idle"}',
+        'data: {"id":"evt_2","type":"session.execution.succeeded",'
+        '"data":{"sessionID":"ses_1"}}',
     )
     events = [event async for event in parse(response)]
     assert len(events) == 1
-    assert events[0].type == "session.idle"
+    assert events[0].type == "session.execution.succeeded"
+    assert events[0].data["data"]["sessionID"] == "ses_1"
 
 
-# — boundary: parses session.error event —
+# — boundary: parses V2 session.step.started event —
 @pytest.mark.asyncio
-async def test_given_session_error_event_then_yields_error():
+async def test_given_v2_step_started_event_then_yields_it():
     response = _make_async_response(
-        'data: {"type": "session.error", "error": "something broke"}',
+        'data: {"id":"evt_3","type":"session.step.started",'
+        '"data":{"sessionID":"ses_1","assistantMessageID":"msg_1","agent":"jarvis"}}',
     )
     events = [event async for event in parse(response)]
     assert len(events) == 1
-    assert events[0].type == "session.error"
+    assert events[0].type == "session.step.started"
+    assert events[0].data["data"]["assistantMessageID"] == "msg_1"
 
 
-# — boundary: parses server.connected event —
+# — boundary: heartbeat lines are ignored —
 @pytest.mark.asyncio
-async def test_given_server_connected_event_then_yields_it():
+async def test_given_heartbeat_line_then_ignored():
     response = _make_async_response(
-        'data: {"type": "server.connected"}',
+        ': heartbeat',
+        'data: {"id":"evt_1","type":"session.text.delta",'
+        '"data":{"sessionID":"ses_1","assistantMessageID":"msg_1","ordinal":0,"delta":"Hello"}}',
     )
     events = [event async for event in parse(response)]
     assert len(events) == 1
-    assert events[0].type == "server.connected"
-
-
-# — boundary: [DONE] stops the stream —
-@pytest.mark.asyncio
-async def test_given_done_marker_then_stops_yielding():
-    response = _make_async_response(
-        'data: {"type": "message.updated", "message": {"id": "1"}}',
-        "data: [DONE]",
-        'data: {"type": "message.updated", "message": {"id": "2"}}',
-    )
-    events = [event async for event in parse(response)]
-    assert len(events) == 1
-
-
-# — false-positive guard: [DONE] yields no events —
-@pytest.mark.asyncio
-async def test_given_done_marker_then_stream_ends_not_errors():
-    response = _make_async_response("data: [DONE]")
-    events = [event async for event in parse(response)]
-    assert len(events) == 0
-
-
-# — boundary: unknown event types are skipped —
-@pytest.mark.asyncio
-async def test_given_unknown_event_type_then_skipped():
-    response = _make_async_response(
-        'data: {"type": "unknown.event", "payload": "ignored"}',
-        'data: {"type": "session.idle"}',
-    )
-    events = [event async for event in parse(response)]
-    assert len(events) == 1
-    assert events[0].type == "session.idle"
-
-
-# — false-positive guard: unknown type does NOT become an event —
-@pytest.mark.asyncio
-async def test_given_only_unknown_events_then_yields_nothing():
-    response = _make_async_response(
-        'data: {"type": "some.other.event"}',
-        'data: {"type": "another.one"}',
-    )
-    events = [event async for event in parse(response)]
-    assert len(events) == 0
+    assert events[0].type == "session.text.delta"
 
 
 # — boundary: JSON decode errors are skipped —
@@ -120,11 +85,12 @@ async def test_given_only_unknown_events_then_yields_nothing():
 async def test_given_invalid_json_then_skipped():
     response = _make_async_response(
         "data: not valid json",
-        'data: {"type": "session.idle"}',
+        'data: {"id":"evt_1","type":"session.text.delta",'
+        '"data":{"sessionID":"ses_1","assistantMessageID":"msg_1","ordinal":0,"delta":"Hello"}}',
     )
     events = [event async for event in parse(response)]
     assert len(events) == 1
-    assert events[0].type == "session.idle"
+    assert events[0].type == "session.text.delta"
 
 
 # — false-positive guard: invalid JSON does not crash —
@@ -141,11 +107,12 @@ async def test_given_non_data_lines_then_skipped():
     response = _make_async_response(
         "event: ping",
         ": comment line",
-        'data: {"type": "message.updated", "message": {"id": "x"}}',
+        'data: {"id":"evt_1","type":"session.text.delta",'
+        '"data":{"sessionID":"ses_1","assistantMessageID":"msg_1","ordinal":0,"delta":"Hello"}}',
     )
     events = [event async for event in parse(response)]
     assert len(events) == 1
-    assert events[0].type == "message.updated"
+    assert events[0].type == "session.text.delta"
 
 
 # — false-positive guard: empty response produces no events —
@@ -160,31 +127,33 @@ async def test_given_empty_response_then_yields_nothing():
 @pytest.mark.asyncio
 async def test_given_event_then_data_dict_is_populated():
     response = _make_async_response(
-        'data: {"type": "message.updated", "message": {"id": "msg1", "role": "assistant"}}',
+        'data: {"id":"evt_1","type":"session.text.delta",'
+        '"data":{"sessionID":"ses_1","assistantMessageID":"msg_1","ordinal":0,"delta":"Hello"}}',
     )
     events = [event async for event in parse(response)]
     assert len(events) == 1
-    assert events[0].data["message"]["id"] == "msg1"
-    assert events[0].data["message"]["role"] == "assistant"
+    assert events[0].data["id"] == "evt_1"
+    assert events[0].data["data"]["sessionID"] == "ses_1"
 
 
 # — tautology trap: data field defaults to empty dict —
 def test_event_dataclass_defaults():
-    event = Event(type="session.idle")
+    event = Event(type="session.text.delta")
     assert event.data == {}
-    assert event.type == "session.idle"
+    assert event.type == "session.text.delta"
 
 
-# — boundary: multiple events in order —
+# — boundary: multiple V2 events in order —
 @pytest.mark.asyncio
-async def test_given_multiple_events_then_yields_all_in_order():
+async def test_given_multiple_v2_events_then_yields_all_in_order():
     response = _make_async_response(
-        'data: {"type": "server.connected"}',
-        'data: {"type": "message.updated", "message": {"id": "a"}}',
-        'data: {"type": "session.idle"}',
+        'data: {"id":"evt_1","type":"server.connected","data":{}}',
+        'data: {"id":"evt_2","type":"session.text.delta",'
+        '"data":{"sessionID":"ses_1","assistantMessageID":"msg_1","ordinal":0,"delta":"Hello"}}',
+        'data: {"id":"evt_3","type":"session.execution.succeeded","data":{"sessionID":"ses_1"}}',
     )
     events = [event async for event in parse(response)]
     assert len(events) == 3
     assert events[0].type == "server.connected"
-    assert events[1].type == "message.updated"
-    assert events[2].type == "session.idle"
+    assert events[1].type == "session.text.delta"
+    assert events[2].type == "session.execution.succeeded"

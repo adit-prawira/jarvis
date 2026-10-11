@@ -1,5 +1,7 @@
 import numpy as np
 
+from utilities.math import MathUtil
+
 
 class SilenceDetector:
     """Detects silence over int16 PCM chunks and signals end-of-turn.
@@ -25,10 +27,7 @@ class SilenceDetector:
         return self._speech_started
 
     def feed(self, chunk: np.ndarray) -> bool:
-        samples = chunk.astype(np.float64)
-        squares = np.square(samples)
-        mean_square = float(squares.mean())
-        rms = float(np.sqrt(mean_square))
+        rms = MathUtil.calculate_rms(chunk)
         is_silent = rms < self._silence_threshold
         if is_silent:
             self._silent_samples += chunk.size

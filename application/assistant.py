@@ -12,6 +12,7 @@ WELCOME_MESSAGE = "Welcome back, Sir"
 ARE_YOU_THERE_MESSAGE = "Are you there, Sir?"
 FAREWELL_PHRASE = ("thanks", "thanks jarvis", "goodbye", "that's all", "dismissed")
 SIGN_OFF_MESSAGE = "Very good, Sir."
+INTERRUPT_POLL_INTERVAL_SECONDS = 0.05
 
 
 class Assistant:
@@ -54,11 +55,31 @@ class Assistant:
             return utterance
 
         await self._mouth.speak(ARE_YOU_THERE_MESSAGE)
-        return await asyncio.to_thread(
-            self._ear.transcribe_utterance, POST_PROMPT_GRACE_SECONDS
-        )
+        return await asyncio.to_thread(self._ear.transcribe_utterance, POST_PROMPT_GRACE_SECONDS)
 
     async def _respond(self, utterance: str) -> None:
+        speak_task = asyncio.create_task(self._speak_turn(utterance))
+        watch_task = asyncio.create_task(self._watch_for_interrupt())
+
+        try:
+            results = await asyncio.wait(
+                {speak_task, watch_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            done = results[0]
+        except BaseException:
+            speak_task.cancel()
+            watch_task.cancel()
+            raise
+
+        for task in (speak_task, watch_task):
+            if not task.done():
+                task.cancel()
+
+        if watch_task is done:
+            await self._brain.abort()
+            await self._mouth.stop()
+
+    async def _speak_turn(self, utterance: str) -> None:
         splitter = SentenceSplitter()
         async for response_text_chunk in self._brain.stream_turn(utterance):
             for sentence in splitter.feed(response_text_chunk):
@@ -66,13 +87,19 @@ class Assistant:
                 if not sanitised:
                     continue
                 await self._mouth.speak(sanitised)
-
         remainder = splitter.flush()
         if not remainder:
             return None
         sanitised = MarkdownStripper.strip(remainder)
         if sanitised:
             await self._mouth.speak(sanitised)
+
+    async def _watch_for_interrupt(self) -> None:
+        while True:
+            phrase = await asyncio.to_thread(self._ear.detect_interruption)
+            if phrase is not None:
+                return
+            await asyncio.sleep(INTERRUPT_POLL_INTERVAL_SECONDS)
 
     @staticmethod
     def _is_farewell(utterance: str) -> bool:

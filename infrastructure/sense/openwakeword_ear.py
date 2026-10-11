@@ -1,7 +1,9 @@
 import numpy as np
 
 from domain.senses.ear import Ear, Transcriber, WakeWordDetector
+from domain.senses.interrupt_detector import InterruptDetector
 from domain.senses.silence_detector import SilenceDetector
+from domain.text.interrupt_phrases import InterruptPhrases
 from domain.wake_word import WakeWordScore
 
 WAKE_MODEL_NAME = "hey_jarvis"
@@ -9,6 +11,11 @@ DEFAULT_THRESHOLD = 0.5
 SAMPLE_RATE = 16_000
 CHUNK_SAMPLES = 1280  # 80ms at 16kHz
 MAX_UTTERANCE_SECONDS = 10.0
+
+INTERRUPT_CAPTURE_SECONDS = 0.3
+INTERRUPT_POLL_SECONDS = 0.08
+DEFAULT_INTERRUPT_THRESHOLD = 1500.0
+DEFAULT_MIN_INTERRUPT_SECONDS = 0.3
 
 
 class OpenWakeWordDetector(WakeWordDetector):
@@ -42,6 +49,8 @@ class OpenWakeWordEar(Ear):
         detector: WakeWordDetector,
         transcriber: Transcriber,
         silence_detector: SilenceDetector,
+        interrupt_detector: InterruptDetector,
+        interrupt_phrases: InterruptPhrases,
         threshold: float = DEFAULT_THRESHOLD,
         max_utterance_seconds: float = MAX_UTTERANCE_SECONDS,
     ) -> None:
@@ -50,6 +59,8 @@ class OpenWakeWordEar(Ear):
         self._threshold = threshold
         self._transcriber = transcriber
         self._silence_detector = silence_detector
+        self._interrupt_detector = interrupt_detector
+        self._interrupt_phrases = interrupt_phrases
         self._max_utterance_samples = int(max_utterance_seconds * SAMPLE_RATE)
 
     def listen_for_wake_command(self) -> None:
@@ -73,6 +84,36 @@ class OpenWakeWordEar(Ear):
         ):
             while not wake_detected:
                 sd.sleep(100)
+
+    def detect_interruption(self) -> str | None:
+        import sounddevice as sd
+
+        frames: list[np.ndarray] = []
+        self._interrupt_detector.reset()
+
+        def handle_audio(indata, *rest) -> None:
+            chunk = indata[:, 0].copy()
+            if self._interrupt_detector.feed(chunk):
+                frames.append(chunk)
+                raise sd.CallbackStop
+
+        with sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="int16",
+            blocksize=CHUNK_SAMPLES,
+            callback=handle_audio,
+        ):
+            sd.sleep(int(INTERRUPT_CAPTURE_SECONDS * 1000))
+
+        if not frames:
+            return None
+
+        audio = np.concatenate(frames)
+        transcript = self._transcriber.transcribe(audio)
+        if self._interrupt_phrases.is_an_interrupt(transcript):
+            return transcript
+        return None
 
     def transcribe_utterance(self, timeout: float) -> str | None:
         import sounddevice as sd

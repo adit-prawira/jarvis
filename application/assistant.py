@@ -1,4 +1,6 @@
 import asyncio
+import logging
+from threading import Event
 
 from domain.brain import Brain
 from domain.senses.ear import Ear
@@ -12,6 +14,9 @@ WELCOME_MESSAGE = "Welcome back, Sir"
 ARE_YOU_THERE_MESSAGE = "Are you there, Sir?"
 FAREWELL_PHRASE = ("thanks", "thanks jarvis", "goodbye", "that's all", "dismissed")
 SIGN_OFF_MESSAGE = "Very good, Sir."
+INTERRUPTION_KEYWORDS = ("stop", "shut up", "hold on", "enough", "quiet", "cancel")
+
+logger = logging.getLogger(__name__)
 
 
 class Assistant:
@@ -43,7 +48,7 @@ class Assistant:
             if self._is_farewell(utterance):
                 await self._mouth.speak(SIGN_OFF_MESSAGE)
                 return
-            print(f"[UTTERANCE] -> {utterance}")
+            logger.info(f"[UTTERANCE] -> {utterance}")
             await self._respond(utterance)
 
     async def _listen_for_next_utterance(self) -> str | None:
@@ -54,9 +59,7 @@ class Assistant:
             return utterance
 
         await self._mouth.speak(ARE_YOU_THERE_MESSAGE)
-        return await asyncio.to_thread(
-            self._ear.transcribe_utterance, POST_PROMPT_GRACE_SECONDS
-        )
+        return await asyncio.to_thread(self._ear.transcribe_utterance, POST_PROMPT_GRACE_SECONDS)
 
     async def _respond(self, utterance: str) -> None:
         splitter = SentenceSplitter()
@@ -65,14 +68,49 @@ class Assistant:
                 sanitised = MarkdownStripper.strip(sentence)
                 if not sanitised:
                     continue
-                await self._mouth.speak(sanitised)
+
+                if await self._speak_with_listening_for_interruption(sanitised):
+                    return
 
         remainder = splitter.flush()
         if not remainder:
             return None
         sanitised = MarkdownStripper.strip(remainder)
         if sanitised:
-            await self._mouth.speak(sanitised)
+            if await self._speak_with_listening_for_interruption(sanitised):
+                return
+
+    async def _speak_with_listening_for_interruption(self, text: str) -> bool:
+        stop_event = Event()
+        speak_task = asyncio.create_task(self._mouth.speak(text))
+        interruption_listener_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._ear.listen_for_interruption, stop_event, INTERRUPTION_KEYWORDS
+            )
+        )
+
+        done, pending_tasks = await asyncio.wait(
+            {speak_task, interruption_listener_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+
+        is_interruption_detected = False
+        if interruption_listener_task in done:
+            is_interruption_detected = interruption_listener_task.result()
+
+        if speak_task in done:
+            await speak_task
+
+        stop_event.set()
+
+        for task in pending_tasks:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if is_interruption_detected:
+            logger.info("INTERRUPTION IS DETECTED")
+        return is_interruption_detected
 
     @staticmethod
     def _is_farewell(utterance: str) -> bool:

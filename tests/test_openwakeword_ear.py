@@ -1,13 +1,18 @@
-"""Unit tests for OpenWakeWordEar.transcribe_utterance — given/then format.
+"""Unit tests for OpenWakeWordEar — given/then format.
 
-`transcribe_utterance` is the recording seam: it feeds chunks to the silence
-detector and returns `None` if the leading-silence timeout elapses before speech
-begins, otherwise it transcribes the recorded (non-leading) audio. The
-`sounddevice` stream is stubbed so the callback is driven synchronously with a
-scripted sequence of chunks, skipping real audio I/O.
+`transcribe_utterance` feeds chunks to the silence detector and returns `None`
+if the leading-silence timeout elapses before speech begins, otherwise it
+transcribes the recorded audio.
+
+`listen_for_interruption` records audio during TTS playback and uses the
+transcriber to detect interruption keywords.
+
+The `sounddevice` stream is stubbed so callbacks are driven synchronously with
+scripted chunks, skipping real audio I/O.
 """
 
 import sys
+from threading import Event
 from types import ModuleType
 
 import numpy as np
@@ -42,6 +47,7 @@ def install_sounddevice_stub(monkeypatch: pytest.MonkeyPatch, chunks: list[np.nd
         def __init__(self, **kwargs: object) -> None:
             self.callback = kwargs["callback"]
             self.fed = 0
+            self.active = True
             streams.append(self)
 
         def __enter__(self) -> "InputStream":
@@ -58,7 +64,9 @@ def install_sounddevice_stub(monkeypatch: pytest.MonkeyPatch, chunks: list[np.nd
             try:
                 stream.callback(chunk)
             except _CallbackStopError:
-                pass
+                stream.active = False
+        else:
+            stream.active = False
 
     module.InputStream = InputStream
     module.sleep = sleep
@@ -71,6 +79,16 @@ def build_ear(transcriber: StubTranscriber, silence_detector: SilenceDetector) -
         detector=object(),
         transcriber=transcriber,
         silence_detector=silence_detector,
+    )
+
+
+def build_ear_for_interruption(transcript: str = "") -> OpenWakeWordEar:
+    return OpenWakeWordEar(
+        detector=object(),
+        transcriber=StubTranscriber(transcript),
+        silence_detector=SilenceDetector(
+            sample_rate=SAMPLE_RATE, silence_threshold=100.0, silence_duration=0.1
+        ),
     )
 
 
@@ -178,3 +196,40 @@ def test_given_utterance_exceeding_max_seconds_then_turn_ends_at_cap(monkeypatch
     assert transcriber.received_audio is not None
     # Capped at 10s (160_000 samples = 125 chunks); assert bounded near cap
     assert transcriber.received_audio.size <= 160_000
+
+
+# — interruption: transcript without keyword returns false —
+def test_given_transcript_without_keyword_then_no_interruption(monkeypatch):
+    ear = build_ear_for_interruption(transcript="hello world")
+    chunks = [loud_chunk()] * 15
+    install_sounddevice_stub(monkeypatch, chunks)
+    stop_event = Event()
+
+    result = ear.listen_for_interruption(stop_event, keywords=("stop", "shut up"))
+
+    assert result is False
+
+
+# — interruption: transcript containing keyword returns true —
+def test_given_transcript_with_keyword_then_interruption(monkeypatch):
+    ear = build_ear_for_interruption(transcript="please stop now")
+    chunks = [loud_chunk()] * 15
+    install_sounddevice_stub(monkeypatch, chunks)
+    stop_event = Event()
+
+    result = ear.listen_for_interruption(stop_event, keywords=("stop", "shut up"))
+
+    assert result is True
+
+
+# — interruption: stop event already set exits immediately —
+def test_given_stop_event_set_before_interruption_listen_then_returns_false(monkeypatch):
+    ear = build_ear_for_interruption(transcript="please stop now")
+    chunks = [loud_chunk()] * 15
+    install_sounddevice_stub(monkeypatch, chunks)
+    stop_event = Event()
+    stop_event.set()
+
+    result = ear.listen_for_interruption(stop_event, keywords=("stop",))
+
+    assert result is False

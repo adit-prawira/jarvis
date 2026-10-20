@@ -1,3 +1,4 @@
+from threading import Event
 from typing import Protocol
 
 import numpy as np
@@ -23,3 +24,5 @@ class Ear(Protocol):
     def listen_for_wake_command(self) -> None: ...
 
     def transcribe_utterance(self, timeout: float) -> str | None: ...
+
+    def listen_for_interruption(self, stop_event: Event, keywords: tuple[str, ...]) -> bool: ...

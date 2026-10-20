@@ -1,3 +1,5 @@
+from threading import Event
+
 import numpy as np
 
 from domain.senses.ear import Ear, Transcriber, WakeWordDetector
@@ -9,7 +11,6 @@ DEFAULT_THRESHOLD = 0.5
 SAMPLE_RATE = 16_000
 CHUNK_SAMPLES = 1280  # 80ms at 16kHz
 MAX_UTTERANCE_SECONDS = 10.0
-
 
 class OpenWakeWordDetector(WakeWordDetector):
     """Wake-word scoring backed by openwakeword's pre-trained model.
@@ -120,3 +121,46 @@ class OpenWakeWordEar(Ear):
 
         audio = np.concatenate(frames) if frames else np.zeros(0, dtype=np.int16)
         return self._transcriber.transcribe(audio)
+
+    def listen_for_interruption(
+        self, stop_event: Event, keywords: tuple[str, ...]
+    ) -> bool:
+        import sounddevice as sd
+
+        frames: list[np.ndarray] = []
+        previous_checked_samples = 0
+        check_interval_samples = int(1.0 * SAMPLE_RATE)
+        max_buffer_samples = int(3.0 * SAMPLE_RATE)
+
+        def handle_audio(indata, *rest) -> None:
+            chunk = indata[:, 0].copy()
+            frames.append(chunk)
+
+        with sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="int16",
+            blocksize=CHUNK_SAMPLES,
+            callback=handle_audio,
+        ) as stream:
+            while stream.active and not stop_event.is_set():
+                sd.sleep(100)
+                total_samples = sum(chunk.size for chunk in frames)
+                if total_samples - previous_checked_samples < check_interval_samples:
+                    continue
+
+                while frames and sum(chunk.size for chunk in frames) > max_buffer_samples:
+                    frames.pop(0)
+
+                audio = np.concatenate(frames)
+                text = self._transcriber.transcribe(audio)
+                if self._contains_keyword(text, keywords):
+                    return True
+                previous_checked_samples = total_samples
+
+        return False
+
+    @staticmethod
+    def _contains_keyword(text: str, keywords: tuple[str, ...]) -> bool:
+        normalised = text.strip().lower().rstrip(".!")
+        return any(keyword in normalised for keyword in keywords)

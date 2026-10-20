@@ -45,8 +45,7 @@ async def test_given_v2_text_delta_event_then_yields_it():
 @pytest.mark.asyncio
 async def test_given_v2_execution_succeeded_event_then_yields_it():
     response = _make_async_response(
-        'data: {"id":"evt_2","type":"session.execution.succeeded",'
-        '"data":{"sessionID":"ses_1"}}',
+        'data: {"id":"evt_2","type":"session.execution.succeeded","data":{"sessionID":"ses_1"}}',
     )
     events = [event async for event in parse(response)]
     assert len(events) == 1
@@ -71,7 +70,7 @@ async def test_given_v2_step_started_event_then_yields_it():
 @pytest.mark.asyncio
 async def test_given_heartbeat_line_then_ignored():
     response = _make_async_response(
-        ': heartbeat',
+        ": heartbeat",
         'data: {"id":"evt_1","type":"session.text.delta",'
         '"data":{"sessionID":"ses_1","assistantMessageID":"msg_1","ordinal":0,"delta":"Hello"}}',
     )

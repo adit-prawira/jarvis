@@ -8,7 +8,9 @@ FakeMouth records spoken sentences — so the orchestration is tested without
 audio, HTTP, or a real brain.
 """
 
+import asyncio
 from collections.abc import AsyncIterator
+from threading import Event
 
 from application.assistant import (
     ARE_YOU_THERE_MESSAGE,
@@ -23,8 +25,13 @@ from application.assistant import (
 class FakeEar:
     """Returns scripted transcriptions in order and records the timeouts asked for."""
 
-    def __init__(self, *transcriptions: str | None) -> None:
+    def __init__(
+        self,
+        *transcriptions: str | None,
+        interruptions: tuple[bool, ...] = (),
+    ) -> None:
         self._transcriptions = list(transcriptions)
+        self._interruptions = list(interruptions)
         self.timeouts: list[float] = []
         self.wake_calls = 0
 
@@ -34,6 +41,13 @@ class FakeEar:
     def transcribe_utterance(self, timeout: float) -> str | None:
         self.timeouts.append(timeout)
         return self._transcriptions.pop(0)
+
+    def listen_for_interruption(
+        self, stop_event: Event, keywords: tuple[str, ...]
+    ) -> bool:
+        if self._interruptions:
+            return self._interruptions.pop(0)
+        return False
 
 
 class FakeBrain:
@@ -52,19 +66,25 @@ class FakeBrain:
 class FakeMouth:
     """Records each sentence spoken so ordering can be asserted."""
 
-    def __init__(self) -> None:
+    def __init__(self, speak_delay: float = 0.0) -> None:
         self.spoken: list[str] = []
+        self._speak_delay = speak_delay
 
     async def speak(self, text: str) -> None:
         self.spoken.append(text)
+        if self._speak_delay:
+            await asyncio.sleep(self._speak_delay)
 
 
 def build_assistant(
-    *transcriptions: str | None, deltas: tuple[str, ...] = ()
+    *transcriptions: str | None,
+    deltas: tuple[str, ...] = (),
+    interruptions: tuple[bool, ...] = (),
+    mouth_delay: float = 0.0,
 ) -> tuple[Assistant, FakeEar, FakeMouth, FakeBrain]:
-    ear = FakeEar(*transcriptions)
+    ear = FakeEar(*transcriptions, interruptions=interruptions)
     brain = FakeBrain(*deltas)
-    mouth = FakeMouth()
+    mouth = FakeMouth(speak_delay=mouth_delay)
     assistant = Assistant(ear=ear, brain=brain, mouth=mouth)
     return assistant, ear, mouth, brain
 
@@ -188,3 +208,41 @@ async def test_given_markdown_only_sentence_then_skipped():
     assistant, _, mouth, _ = build_assistant("hello", deltas=("Hello, sir. --- ",))
     await assistant._respond("hello")
     assert mouth.spoken == ["Hello, sir."]
+
+
+# — interruption: no interruption means all sentences are spoken —
+async def test_given_no_interruption_then_speaks_all_sentences():
+    assistant, _, mouth, _ = build_assistant(
+        "hello",
+        deltas=("Hello, sir. ", "How are you?"),
+        interruptions=(False, False),
+        mouth_delay=0.01,
+    )
+    await assistant._respond("hello")
+    assert mouth.spoken == ["Hello, sir.", "How are you?"]
+
+
+# — interruption: detection during first sentence stops the response —
+async def test_given_interruption_during_first_sentence_then_stops_responding():
+    assistant, _, mouth, brain = build_assistant(
+        "hello",
+        deltas=("Hello, sir. ", "How are you?"),
+        interruptions=(True,),
+        mouth_delay=0.01,
+    )
+    await assistant._respond("hello")
+    assert mouth.spoken == ["Hello, sir."]
+    assert brain.messages == ["hello"]
+
+
+# — interruption: detection is logged —
+async def test_given_interruption_then_logs_detection(caplog):
+    assistant, _, _, _ = build_assistant(
+        "hello",
+        deltas=("Hello, sir. ",),
+        interruptions=(True,),
+        mouth_delay=0.01,
+    )
+    with caplog.at_level("INFO"):
+        await assistant._respond("hello")
+    assert "INTERRUPTION IS DETECTED" in caplog.text

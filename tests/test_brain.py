@@ -212,9 +212,7 @@ async def test_given_model_then_model_ref_sent():
 @respx.mock
 async def test_given_location_then_location_sent():
     project_path = "/Users/adityaprawira/Documents/projects/jarvis"
-    brain_with_location = OpenCodeBrain(
-        base_url=BASE_URL, password=PASSWORD, location=project_path
-    )
+    brain_with_location = OpenCodeBrain(base_url=BASE_URL, password=PASSWORD, location=project_path)
     session_mock = respx.post(f"{BASE_URL}/api/session").mock(
         return_value=_session_response(SESSION_ID)
     )

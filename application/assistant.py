@@ -84,9 +84,7 @@ class Assistant:
         stop_event = Event()
         speak_task = asyncio.create_task(self._mouth.speak(text))
         interruption_listener_task = asyncio.create_task(
-            asyncio.to_thread(
-                self._ear.listen_for_interruption, stop_event, INTERRUPTION_KEYWORDS
-            )
+            asyncio.to_thread(self._ear.listen_for_interruption, stop_event, INTERRUPTION_KEYWORDS)
         )
 
         done, pending_tasks = await asyncio.wait(
@@ -97,6 +95,16 @@ class Assistant:
         if interruption_listener_task in done:
             is_interruption_detected = interruption_listener_task.result()
 
+        if is_interruption_detected:
+            try:
+                await self._mouth.stop()
+            except Exception as exception:
+                logger.warning("Failed to stop mouth: %s", exception)
+
+            try:
+                await self._brain.abort()
+            except Exception as exception:
+                logger.warning("Failed to abort brain: %s", exception)
         if speak_task in done:
             await speak_task
 

@@ -12,6 +12,7 @@ SAMPLE_RATE = 16_000
 CHUNK_SAMPLES = 1280  # 80ms at 16kHz
 MAX_UTTERANCE_SECONDS = 10.0
 
+
 class OpenWakeWordDetector(WakeWordDetector):
     """Wake-word scoring backed by openwakeword's pre-trained model.
 
@@ -122,9 +123,7 @@ class OpenWakeWordEar(Ear):
         audio = np.concatenate(frames) if frames else np.zeros(0, dtype=np.int16)
         return self._transcriber.transcribe(audio)
 
-    def listen_for_interruption(
-        self, stop_event: Event, keywords: tuple[str, ...]
-    ) -> bool:
+    def listen_for_interruption(self, stop_event: Event, keywords: tuple[str, ...]) -> bool:
         import sounddevice as sd
 
         frames: list[np.ndarray] = []

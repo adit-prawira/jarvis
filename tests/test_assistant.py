@@ -42,9 +42,7 @@ class FakeEar:
         self.timeouts.append(timeout)
         return self._transcriptions.pop(0)
 
-    def listen_for_interruption(
-        self, stop_event: Event, keywords: tuple[str, ...]
-    ) -> bool:
+    def listen_for_interruption(self, stop_event: Event, keywords: tuple[str, ...]) -> bool:
         if self._interruptions:
             return self._interruptions.pop(0)
         return False
@@ -56,11 +54,15 @@ class FakeBrain:
     def __init__(self, *deltas: str) -> None:
         self._deltas = list(deltas)
         self.messages: list[str] = []
+        self.abort_called = False
 
     async def stream_turn(self, message: str) -> AsyncIterator[str]:
         self.messages.append(message)
         for delta in self._deltas:
             yield delta
+
+    async def abort(self) -> None:
+        self.abort_called = True
 
 
 class FakeMouth:
@@ -68,12 +70,16 @@ class FakeMouth:
 
     def __init__(self, speak_delay: float = 0.0) -> None:
         self.spoken: list[str] = []
+        self.stop_called = False
         self._speak_delay = speak_delay
 
     async def speak(self, text: str) -> None:
         self.spoken.append(text)
         if self._speak_delay:
             await asyncio.sleep(self._speak_delay)
+
+    async def stop(self) -> None:
+        self.stop_called = True
 
 
 def build_assistant(
@@ -246,3 +252,51 @@ async def test_given_interruption_then_logs_detection(caplog):
     with caplog.at_level("INFO"):
         await assistant._respond("hello")
     assert "INTERRUPTION IS DETECTED" in caplog.text
+
+
+# — interruption: mouth is stopped —
+async def test_given_interruption_then_mouth_is_stopped():
+    assistant, _, mouth, _ = build_assistant(
+        "hello",
+        deltas=("Hello, sir. ", "How are you?"),
+        interruptions=(True,),
+        mouth_delay=0.01,
+    )
+    await assistant._respond("hello")
+    assert mouth.stop_called is True
+
+
+# — interruption: brain turn is aborted —
+async def test_given_interruption_then_brain_is_aborted():
+    assistant, _, _, brain = build_assistant(
+        "hello",
+        deltas=("Hello, sir. ", "How are you?"),
+        interruptions=(True,),
+        mouth_delay=0.01,
+    )
+    await assistant._respond("hello")
+    assert brain.abort_called is True
+
+
+# — no interruption: mouth is not stopped —
+async def test_given_no_interruption_then_mouth_is_not_stopped():
+    assistant, _, mouth, _ = build_assistant(
+        "hello",
+        deltas=("Hello, sir. ",),
+        interruptions=(False,),
+        mouth_delay=0.01,
+    )
+    await assistant._respond("hello")
+    assert mouth.stop_called is False
+
+
+# — no interruption: brain is not aborted —
+async def test_given_no_interruption_then_brain_is_not_aborted():
+    assistant, _, _, brain = build_assistant(
+        "hello",
+        deltas=("Hello, sir. ",),
+        interruptions=(False,),
+        mouth_delay=0.01,
+    )
+    await assistant._respond("hello")
+    assert brain.abort_called is False
